@@ -44,7 +44,6 @@ integer*8,allocatable:: nfpcore_this(:),nfpcore_tot(:),order(:),nvfpcore(:),comp
 character(len=lname),allocatable:: name_sisfeat(:),name_in1(:),name_in2(:),lastop_in1(:)*10,lastop_in2(:)*10
 logical,allocatable:: available(:)
 
-
 ! Stop if the whole feature space had been selected.
 IF (iFCDI>1 .and. nsis(iFCDI-1)<subs_sis) THEN
    if(mpirank==0) then
@@ -176,7 +175,8 @@ end if
 
 call mpi_bcast(nreject,1,mpi_integer8,0,mpi_comm_world,mpierr)
 if(mpirank/=0 .and. nreject>0) allocate(reject(nreject))
-if(nreject>0) call mpi_bcast(reject,nreject*lname,mpi_character,0,mpi_comm_world,mpierr)
+if(nreject>0) call mpi_bcast(reject,INT(nreject*lname),mpi_character,0,mpi_comm_world,mpierr)
+
 
 !--------------------------
 ! Standard Deviation
@@ -286,11 +286,11 @@ do icomb=1,rung
      ! broadcast ntot-nthis
        if(ntot>nthis) then
         i=ntot-nthis
-        call mpi_bcast(feat_in1(:,:i),i*sum(nsample),mpi_double_precision,0,mpi_comm_world,mpierr)
-        call mpi_bcast(name_in1(:i),i*lname,mpi_character,0,mpi_comm_world,mpierr)
-        call mpi_bcast(lastop_in1(:i),i*10,mpi_character,0,mpi_comm_world,mpierr)
-        call mpi_bcast(dim_in1(:,:i),i*ndimtype,mpi_double_precision,0,mpi_comm_world,mpierr)
-        call mpi_bcast(complexity_in1(:i),i,mpi_integer8,0,mpi_comm_world,mpierr)
+        call mpi_bcast(feat_in1(:,:i),INT(i)*sum(nsample),mpi_double_precision,0,mpi_comm_world,mpierr)
+        call mpi_bcast(name_in1(:i),INT(i)*lname,mpi_character,0,mpi_comm_world,mpierr)
+        call mpi_bcast(lastop_in1(:i),INT(i)*10,mpi_character,0,mpi_comm_world,mpierr)
+        call mpi_bcast(dim_in1(:,:i),INT(i)*ndimtype,mpi_double_precision,0,mpi_comm_world,mpierr)
+        call mpi_bcast(complexity_in1(:i),INT(i),mpi_integer8,0,mpi_comm_world,mpierr)
        end if
 
       if(mpirank==0) then  ! send nthis 
@@ -298,11 +298,11 @@ do icomb=1,rung
           j=ntot-nthis+mpin2(i)  ! start
           k=nthis-mpin2(i)+1   ! size
           if(mpin(i)>0) then
-          call mpi_send(feat_in1(:,j:ntot),k*sum(nsample),mpi_double_precision,i-1,31,mpi_comm_world,status,mpierr)
-          call mpi_send(name_in1(j:ntot),k*lname,mpi_character,i-1,32,mpi_comm_world,status,mpierr)
-          call mpi_send(lastop_in1(j:ntot),k*10,mpi_character,i-1,33,mpi_comm_world,status,mpierr)
-          call mpi_send(complexity_in1(j:ntot),k,mpi_integer8,i-1,34,mpi_comm_world,status,mpierr)
-          call mpi_send(dim_in1(:,j:ntot),k*ndimtype,mpi_double_precision,i-1,35,mpi_comm_world,status,mpierr)
+          call mpi_send(feat_in1(:,j:ntot),INT(k)*sum(nsample),mpi_double_precision,INT(i-1),31,mpi_comm_world,mpierr)
+          call mpi_send(name_in1(j:ntot),INT(k)*lname,mpi_character,INT(i-1),32,mpi_comm_world,mpierr)
+          call mpi_send(lastop_in1(j:ntot),INT(k)*10,mpi_character,INT(i-1),33,mpi_comm_world,mpierr)
+          call mpi_send(complexity_in1(j:ntot),INT(k),mpi_integer8,INT(i-1),34,mpi_comm_world,mpierr)
+          call mpi_send(dim_in1(:,j:ntot),INT(k)*ndimtype,mpi_double_precision,INT(i-1),35,mpi_comm_world,mpierr)
           end if
         end do
       else  ! receive
@@ -310,11 +310,11 @@ do icomb=1,rung
         l=ntot-nthis+(nthis-mpin2(mpirank+1)+1)  ! end
         k=nthis-mpin2(mpirank+1)+1  ! size
         if(mpin(mpirank+1)>0) then
-        call mpi_recv(feat_in1(:,j:l),k*sum(nsample),mpi_double_precision,0,31,mpi_comm_world,status,mpierr)
-        call mpi_recv(name_in1(j:l),k*lname,mpi_character,0,32,mpi_comm_world,status,mpierr)
-        call mpi_recv(lastop_in1(j:l),k*10,mpi_character,0,33,mpi_comm_world,status,mpierr)
-        call mpi_recv(complexity_in1(j:l),k,mpi_integer8,0,34,mpi_comm_world,status,mpierr)
-        call mpi_recv(dim_in1(:,j:l),k*ndimtype,mpi_double_precision,0,35,mpi_comm_world,status,mpierr)
+        call mpi_recv(feat_in1(:,j:l),INT(k)*sum(nsample),mpi_double_precision,0,31,mpi_comm_world,status,mpierr)
+        call mpi_recv(name_in1(j:l),INT(k)*lname,mpi_character,0,32,mpi_comm_world,status,mpierr)
+        call mpi_recv(lastop_in1(j:l),INT(k)*10,mpi_character,0,33,mpi_comm_world,status,mpierr)
+        call mpi_recv(complexity_in1(j:l),INT(k),mpi_integer8,0,34,mpi_comm_world,status,mpierr)
+        call mpi_recv(dim_in1(:,j:l),INT(k)*ndimtype,mpi_double_precision,0,35,mpi_comm_world,status,mpierr)
         end if
       end if
 
@@ -336,11 +336,11 @@ do icomb=1,rung
        !---------------------------
        ! create nfpcore_this: # new features generated on each core
        if(mpirank/=0) then
-          call mpi_send(nf(icomb),1,mpi_integer8,0,1,mpi_comm_world,status,mpierr)
+          call mpi_send(nf(icomb),1,mpi_integer8,0,1,mpi_comm_world,mpierr)
        else
           nfpcore_this(1)=nf(icomb)
           do mpii=1,mpisize-1
-               call mpi_recv(nfpcore_this(mpii+1),1,mpi_integer8,mpii,1,mpi_comm_world,status,mpierr)
+               call mpi_recv(nfpcore_this(mpii+1),1,mpi_integer8,INT(mpii),1,mpi_comm_world,status,mpierr)
           end do
        end if
        call mpi_bcast(nfpcore_this,mpisize,mpi_integer8,0,mpi_comm_world,mpierr)
@@ -387,11 +387,11 @@ do icomb=1,rung
        end do
 
        if(mpirank/=0) then
-          call mpi_send(nvf_new,1,mpi_integer8,0,1,mpi_comm_world,status,mpierr)
+          call mpi_send(nvf_new,1,mpi_integer8,0,1,mpi_comm_world,mpierr)
        else
           nvfpcore(1)=nvf_new
           do mpii=1,mpisize-1
-               call mpi_recv(nvfpcore(mpii+1),1,mpi_integer8,mpii,1,mpi_comm_world,status,mpierr)
+               call mpi_recv(nvfpcore(mpii+1),1,mpi_integer8,INT(mpii),1,mpi_comm_world,status,mpierr)
           end do
        end if
        call mpi_bcast(nvfpcore,mpisize,mpi_integer8,0,mpi_comm_world,mpierr)
@@ -428,11 +428,11 @@ do icomb=1,rung
 
        !renew nfpcore_this
        if(mpirank/=0) then
-          call mpi_send(nf(icomb),1,mpi_integer8,0,1,mpi_comm_world,status,mpierr)
+          call mpi_send(nf(icomb),1,mpi_integer8,0,1,mpi_comm_world,mpierr)
        else
           nfpcore_this(1)=nf(icomb)
           do mpii=1,mpisize-1
-               call mpi_recv(nfpcore_this(mpii+1),1,mpi_integer8,mpii,1,mpi_comm_world,status,mpierr)
+               call mpi_recv(nfpcore_this(mpii+1),1,mpi_integer8,INT(mpii),1,mpi_comm_world,status,mpierr)
           end do
        end if
        call mpi_bcast(nfpcore_this,mpisize,mpi_integer8,0,mpi_comm_world,mpierr)
@@ -448,11 +448,11 @@ do icomb=1,rung
       !--------------------------------------------------------------------
        i=nf(icomb)
        if(mpirank>0 .and. i>0) then
-          call mpi_send(fout(:,:i),sum(nsample)*i,mpi_double_precision,0,2,mpi_comm_world,status,mpierr)
-          call mpi_send(name_out(:i),i*lname,mpi_character,0,3,mpi_comm_world,status,mpierr)
-          call mpi_send(lastop_out(:i),i*10,mpi_character,0,4,mpi_comm_world,status,mpierr)
-          call mpi_send(complexity_out(:i),i,mpi_integer8,0,5,mpi_comm_world,status,mpierr)
-          call mpi_send(dim_out(:,:i),ndimtype*i,mpi_double_precision,0,6,mpi_comm_world,status,mpierr)
+          call mpi_send(fout(:,:i),sum(nsample)*INT(i),mpi_double_precision,0,2,mpi_comm_world,mpierr)
+          call mpi_send(name_out(:i),INT(i)*lname,mpi_character,0,3,mpi_comm_world,mpierr)
+          call mpi_send(lastop_out(:i),INT(i)*10,mpi_character,0,4,mpi_comm_world,mpierr)
+          call mpi_send(complexity_out(:i),INT(i),mpi_integer8,0,5,mpi_comm_world,mpierr)
+          call mpi_send(dim_out(:,:i),ndimtype*INT(i),mpi_double_precision,0,6,mpi_comm_world,mpierr)
        else if(mpirank==0) then
          if(ntot>ubound(feat_in1,2)) &
                  call addm_in1(ntot-ubound(feat_in1,2),feat_in1,name_in1,lastop_in1,complexity_in1,dim_in1)
@@ -466,11 +466,11 @@ do icomb=1,rung
               k=ntot-nthis+sum(nfpcore_this(:mpii+1))    ! end
               l=nfpcore_this(mpii+1)     ! size
               if(l>0) then
-              call mpi_recv(feat_in1(:,j:k),sum(nsample)*l,mpi_double_precision,mpii,2,mpi_comm_world,status,mpierr)
-              call mpi_recv(name_in1(j:k),l*lname,mpi_character,mpii,3,mpi_comm_world,status,mpierr)
-              call mpi_recv(lastop_in1(j:k),l*10,mpi_character,mpii,4,mpi_comm_world,status,mpierr)
-              call mpi_recv(complexity_in1(j:k),l,mpi_integer8,mpii,5,mpi_comm_world,status,mpierr)
-              call mpi_recv(dim_in1(:,j:k),ndimtype*l,mpi_double_precision,mpii,6,mpi_comm_world,status,mpierr)
+              call mpi_recv(feat_in1(:,j:k),sum(nsample)*INT(l),mpi_double_precision,INT(mpii),2,mpi_comm_world,status,mpierr)
+              call mpi_recv(name_in1(j:k),INT(l)*lname,mpi_character,INT(mpii),3,mpi_comm_world,status,mpierr)
+              call mpi_recv(lastop_in1(j:k),INT(l)*10,mpi_character,INT(mpii),4,mpi_comm_world,status,mpierr)
+              call mpi_recv(complexity_in1(j:k),INT(l),mpi_integer8,INT(mpii),5,mpi_comm_world,status,mpierr)
+              call mpi_recv(dim_in1(:,j:k),ndimtype*INT(l),mpi_double_precision,INT(mpii),6,mpi_comm_world,status,mpierr)
               end if
          end do
         end if
@@ -480,15 +480,15 @@ do icomb=1,rung
         !------------------------------------------------------
          if(nvf>0) then
             if(mpirank/=0) then
-               if(nvf_new>0) call mpi_send(vfeat(:,:,:nvf_new),sum(nsample)*vfsize*nvf_new,&
-                        mpi_double_precision,0,7,mpi_comm_world,status,mpierr)
+               if(nvf_new>0) call mpi_send(vfeat(:,:,:nvf_new),sum(nsample)*vfsize*INT(nvf_new),&
+                        mpi_double_precision,0,7,mpi_comm_world,mpierr)
             else
               if(sum(nvfpcore)>ubound(vfeat,3)) call addm_vf(sum(nvfpcore)-ubound(vfeat,3)) ! vector feature
               do mpii=1,mpisize-1
                    i=ntot-nthis+sum(nfpcore_this(:mpii))+1
                    j=ntot-nthis+sum(nfpcore_this(:mpii+1))
                    if(nvfpcore(mpii+1)>0) call mpi_recv(vfeat(:,:,nvf_new+1:nvf_new+nvfpcore(mpii+1)),&
-                     sum(nsample)*vfsize*nvfpcore(mpii+1),mpi_double_precision,mpii,7,mpi_comm_world,status,mpierr)
+                     sum(nsample)*vfsize*INT(nvfpcore(mpii+1)),mpi_double_precision,INT(mpii),7,mpi_comm_world,status,mpierr)
                    nvf_new=nvf_new+nvfpcore(mpii+1)
               end do
              end if
@@ -500,10 +500,10 @@ do icomb=1,rung
                 i=nvf_new/k
                 j=mod(nvf_new,k)
                 do mpii=1,i
-                   call mpi_bcast(vfeat(:,:,(mpii-1)*k+1:mpii*k),sum(nsample)*vfsize*k,mpi_double_precision,0,&
+                   call mpi_bcast(vfeat(:,:,(mpii-1)*k+1:mpii*k),sum(nsample)*vfsize*INT(k),mpi_double_precision,0,&
                                    mpi_comm_world,mpierr)
                 end do
-                call mpi_bcast(vfeat(:,:,nvf_new-j+1:nvf_new),sum(nsample)*vfsize*j,mpi_double_precision,0,&
+                call mpi_bcast(vfeat(:,:,nvf_new-j+1:nvf_new),sum(nsample)*vfsize*INT(j),mpi_double_precision,0,&
                      mpi_comm_world,mpierr)
              end if
           end if
@@ -512,11 +512,11 @@ do icomb=1,rung
        ! collect the newly selected features from each core to mpirank0
        !----------------------------------------------------------------
        if(mpirank/=0) then
-         call mpi_send(nselect,1,mpi_integer8,0,5,mpi_comm_world,status,mpierr)
+         call mpi_send(nselect,1,mpi_integer8,0,5,mpi_comm_world,mpierr)
        else
          mpik=nselect
          do mpii=1,mpisize-1
-           call mpi_recv(mpij,1,mpi_integer8,mpii,5,mpi_comm_world,status,mpierr)
+           call mpi_recv(mpij,1,mpi_integer8,INT(mpii),5,mpi_comm_world,status,mpierr)
            mpik=mpik+mpij  ! count the total number of selected features
          end do
        end if
@@ -559,17 +559,17 @@ if(rung==0) then
  nfpcore_this=nselect
 else
  if(mpirank/=0) then
-     call mpi_send(nf(rung),1,mpi_integer8,0,1,mpi_comm_world,status,mpierr)
-     call mpi_send(nselect,1,mpi_integer8,0,2,mpi_comm_world,status,mpierr)
-     call mpi_send(nvf_new-nvf_old,1,mpi_integer8,0,3,mpi_comm_world,status,mpierr)
+     call mpi_send(nf(rung),1,mpi_integer8,0,1,mpi_comm_world,mpierr)
+     call mpi_send(nselect,1,mpi_integer8,0,2,mpi_comm_world,mpierr)
+     call mpi_send(nvf_new-nvf_old,1,mpi_integer8,0,3,mpi_comm_world,mpierr)
  else
       nfpcore_this(1)=nselect
       nvfpcore(1)=nvf_new
       do mpii=1,mpisize-1
-           call mpi_recv(mpij,1,mpi_integer8,mpii,1,mpi_comm_world,status,mpierr)
+           call mpi_recv(mpij,1,mpi_integer8,INT(mpii),1,mpi_comm_world,status,mpierr)
            nf(rung)=nf(rung)+mpij
-           call mpi_recv(nfpcore_this(mpii+1),1,mpi_integer8,mpii,2,mpi_comm_world,status,mpierr)
-           call mpi_recv(nvfpcore(mpii+1),1,mpi_integer8,mpii,3,mpi_comm_world,status,mpierr)
+           call mpi_recv(nfpcore_this(mpii+1),1,mpi_integer8,INT(mpii),2,mpi_comm_world,status,mpierr)
+           call mpi_recv(nvfpcore(mpii+1),1,mpi_integer8,INT(mpii),3,mpi_comm_world,status,mpierr)
       end do
      write(phiname,'(a,i2.2)') 'phi',rung
      write(*,'(a,i15)') 'Total number of newly generated features: ',nf(rung)
@@ -1650,9 +1650,9 @@ IF(mpisize>1) THEN
          end if
 
          !broadcast compftag
-          call mpi_bcast(compftag,nfpcore_this(mpiloc(k)),mpi_double_precision,mpiloc(k)-1,mpi_comm_world,mpierr)
+          call mpi_bcast(compftag,INT(nfpcore_this(mpiloc(k))),mpi_double_precision,INT(mpiloc(k))-1,mpi_comm_world,mpierr)
          ! broadcast name
-          call mpi_bcast(compname,nfpcore_this(mpiloc(k))*lname,mpi_character,mpiloc(k)-1,mpi_comm_world,mpierr)
+          call mpi_bcast(compname,INT(nfpcore_this(mpiloc(k)))*lname,mpi_character,INT(mpiloc(k))-1,mpi_comm_world,mpierr)
 
          ! do the comparision
          if( all( mpirank/=(mpiloc(:k)-1) ) .and. nfpcore_this(mpirank+1)>0 ) then
@@ -1680,12 +1680,12 @@ IF(mpisize>1) THEN
                  goto 124
               end if
             end do
-        call mpi_send(compftag,nfpcore_this(mpiloc(k)),mpi_double_precision,mpiloc(k)-1,33,mpi_comm_world,status,mpierr)
+        call mpi_send(compftag,INT(nfpcore_this(mpiloc(k))),mpi_double_precision,INT(mpiloc(k))-1,33,mpi_comm_world,mpierr)
 
           else if(mpirank==mpiloc(k)-1) then
             do l=1,mpisize
              if( any( l==mpiloc(:k) ) .or. nfpcore_this(l)==0 ) cycle
-    call mpi_recv(compftag,nfpcore_this(mpiloc(k)),mpi_double_precision,mpi_any_source,33,mpi_comm_world,status,mpierr)
+    call mpi_recv(compftag,INT(nfpcore_this(mpiloc(k))),mpi_double_precision,mpi_any_source,33,mpi_comm_world,status,mpierr)
                do i=1,nfpcore_this(mpiloc(k))
                 if(abs(compftag(i))<1d-8) available(i)=.false.
                end do
@@ -1710,10 +1710,10 @@ IF(mpisize>1) THEN
   end do
 
   if(mpirank/=0)  then
-    call mpi_send(j,1,mpi_integer8,0,1,mpi_comm_world,status,mpierr)
+    call mpi_send(j,1,mpi_integer8,0,1,mpi_comm_world,mpierr)
   else
     do k=1,mpisize-1
-      call mpi_recv(i,1,mpi_integer8,k,1,mpi_comm_world,status,mpierr)
+      call mpi_recv(i,1,mpi_integer8,INT(k),1,mpi_comm_world,status,mpierr)
       j=j+i
     end do
 !   write(*,'(a,i10)') 'Number of features after the redundant check is: ',j
@@ -1740,7 +1740,7 @@ if(mpirank==0) write(*,'(/a)') 'Final sure independence screening ...'
 pavailable=.false.
 if(nfpcore_this(mpirank+1)>0) call update_availability(available,pavailable)
 do l=1,mpisize
- call mpi_bcast(pavailable(l),1,mpi_logical,l-1,mpi_comm_world,mpierr)
+ call mpi_bcast(pavailable(l),1,mpi_logical,INT(l)-1,mpi_comm_world,mpierr)
 end do
 if(nfpcore_this(mpirank+1)>0) score=-1   ! initial score
 
@@ -1784,8 +1784,8 @@ do while(i<subs_sis .and. any(pavailable))
 
           !broadcast to let all the core has the same data
           do l=1,mpisize
-            call mpi_bcast(pscore(l,:2),2,mpi_double_precision,l-1,mpi_comm_world,mpierr)
-            call mpi_bcast(pftag(l),1,mpi_double_precision,l-1,mpi_comm_world,mpierr)
+            call mpi_bcast(pscore(l,:2),2,mpi_double_precision,INT(l)-1,mpi_comm_world,mpierr)
+            call mpi_bcast(pftag(l),1,mpi_double_precision,INT(l)-1,mpi_comm_world,mpierr)
           end do
 
           !find the max score
@@ -1806,20 +1806,20 @@ do while(i<subs_sis .and. any(pavailable))
                  sisfeat(:,i)=feat(:,loc(2))
                  name_sisfeat(i)=fname(loc(2))
              else
-                call mpi_send(feat(:,loc(2)),sum(nsample),mpi_double_precision,0,100,mpi_comm_world,status,mpierr)
-                call mpi_send(fname(loc(2)),lname,mpi_character,0,101,mpi_comm_world,status,mpierr)
+                call mpi_send(feat(:,loc(2)),sum(nsample),mpi_double_precision,0,100,mpi_comm_world,mpierr)
+                call mpi_send(fname(loc(2)),lname,mpi_character,0,101,mpi_comm_world,mpierr)
              end if
           end if
 
           if(mpirank==0 .and. mpirank/=(loc(1)-1) ) then
-               call mpi_recv(sisfeat(:,i),sum(nsample),mpi_double_precision,loc(1)-1,100,mpi_comm_world,status,mpierr)
-               call mpi_recv(name_sisfeat(i),lname,mpi_character,loc(1)-1,101,mpi_comm_world,status,mpierr)
+               call mpi_recv(sisfeat(:,i),sum(nsample),mpi_double_precision,INT(loc(1))-1,100,mpi_comm_world,status,mpierr)
+               call mpi_recv(name_sisfeat(i),lname,mpi_character,INT(loc(1))-1,101,mpi_comm_world,status,mpierr)
           end if
           !---
 
           if(nfpcore_this(mpirank+1)>0) call update_availability(available,pavailable)
           do l=1,mpisize
-           call mpi_bcast(pavailable(l),1,mpi_logical,l-1,mpi_comm_world,mpierr)
+           call mpi_bcast(pavailable(l),1,mpi_logical,INT(l)-1,mpi_comm_world,mpierr)
           end do
      end do
      !--------------------
@@ -1886,10 +1886,10 @@ END IF
 
 order(nf+1)=n  ! store the number of features after check
 if(mpirank/=0)  then
-  call mpi_send(n,1,mpi_integer8,0,1,mpi_comm_world,status,mpierr)
+  call mpi_send(n,1,mpi_integer8,0,1,mpi_comm_world,mpierr)
 else
   do l=1,mpisize-1
-    call mpi_recv(i,1,mpi_integer8,l,1,mpi_comm_world,status,mpierr)
+    call mpi_recv(i,1,mpi_integer8,INT(l),1,mpi_comm_world,status,mpierr)
     n=n+i
  end do
 end if

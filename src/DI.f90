@@ -614,7 +614,7 @@ do idimen=1,dim_DI
 ! collecting the best models
 ! select_model,select_LS,select_LSmaxae,select_CV,select_CVmaxae,mID,mscore(RMSE,MaxAE,CV_RMSE,CV_MaxAE)
    if(mpirank>0) then
-     call mpi_send(totalm,1,mpi_integer8,0,1,mpi_comm_world,status,mpierr)
+     call mpi_send(totalm,1,mpi_integer8,0,1,mpi_comm_world,mpierr)
    else
      do i=1,mpisize-1
        call mpi_recv(bigm,1,mpi_integer8,i,1,mpi_comm_world,status,mpierr)
@@ -637,7 +637,7 @@ do idimen=1,dim_DI
       loc=minloc(select_metric)
       k=loc(1)
       if(mpirank>0) then
-        call mpi_send(select_metric(loc(1)),1,mpi_double_precision,0,1,mpi_comm_world,status,mpierr)
+        call mpi_send(select_metric(loc(1)),1,mpi_double_precision,0,1,mpi_comm_world,mpierr)
       else
         mpicollect(1)=select_metric(loc(1))
         do i=1,mpisize-1
@@ -1027,7 +1027,7 @@ do idimen=1,dim_DI
 
 ! collecting the best models from all CPU cores
    if(mpirank>0) then
-     call mpi_send(totalm,1,mpi_integer8,0,1,mpi_comm_world,status,mpierr)
+     call mpi_send(totalm,1,mpi_integer8,0,1,mpi_comm_world,mpierr)
    else
      do i=1,mpisize-1
        call mpi_recv(bigm,1,mpi_integer8,i,1,mpi_comm_world,status,mpierr)
@@ -1046,7 +1046,7 @@ do idimen=1,dim_DI
       mscore(j,:)=(/dble(select_overlap_n(k)),select_overlap_area(k)/)
 
       if(mpirank>0) then
-        call mpi_send(mscore(j,:),2,mpi_double_precision,0,1,mpi_comm_world,status,mpierr)
+        call mpi_send(mscore(j,:),2,mpi_double_precision,0,1,mpi_comm_world,mpierr)
       else
         mpicollect(1,:)=mscore(j,:)
         do i=1,mpisize-1
