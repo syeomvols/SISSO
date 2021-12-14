@@ -22,7 +22,7 @@ integer   nsf,nvf,ntask,vfsize,ndimtype,maxcomplexity,rung,maxrung,lname,maxcomb
 parameter (lname=150,maxrung=20,maxcomb=10)
 character vf2sf*10,opset(maxrung)*200,method*10,metric*10!,calc*4
 real*8    maxfval_lb,maxfval_ub,width,L1_tole,L1_minrmse,L1_elastic,PI
-integer*8 subs_sis,nsis(10000)
+integer*8 subs_sis(10000),nsis(10000)
 logical   L1_warm_start,L1_weighted,restart,fit_intercept
 integer,allocatable:: nsample(:),ngroup(:,:),isconvex(:,:)
 real*8,allocatable::  prop_y(:),psfeat(:,:),res(:),pfdim(:,:),pvfeat(:,:,:)

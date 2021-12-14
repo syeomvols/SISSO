@@ -45,7 +45,7 @@ character(len=lname),allocatable:: name_sisfeat(:),name_in1(:),name_in2(:),lasto
 logical,allocatable:: available(:)
 
 ! Stop if the whole feature space had been selected.
-IF (iFCDI>1 .and. nsis(iFCDI-1)<subs_sis) THEN
+IF (iFCDI>1 .and. nsis(iFCDI-1)<subs_sis(iFCDI-1)) THEN
    if(mpirank==0) then
       write(*,'(a)') 'WARNING: all features had been selected at previous iterations!'
       write(*,'(a,i10)') 'Size of the SIS-selected subspace from this iteration:',nsis(iFCDI)
@@ -83,7 +83,7 @@ allocate(complexity_out(i))
 allocate(dim_out(ndimtype,i))
 if(nvf>0) allocate(vfeat(sum(nsample),vfsize,i))
 
-j=2*subs_sis
+j=2*subs_sis(iFCDI)
 allocate(f_select(sum(nsample),j))
 allocate(ftag_select(j))
 allocate(score_select(j,2))
@@ -595,8 +595,8 @@ if(mpisize>1) call dup_pcheck(nfpcore_this,ftag_select,name_select,order,availab
 ! sure independence screening
 !---------------------------------------
 if(mpirank==0) then
-    allocate(sisfeat(sum(nsample),subs_sis))
-    allocate(name_sisfeat(subs_sis))
+    allocate(sisfeat(sum(nsample),subs_sis(iFCDI)))
+    allocate(name_sisfeat(subs_sis(iFCDI)))
 end if
 
 call iter_sis_p(nfpcore_this,available,ftag_select,name_select,f_select,sisfeat,name_sisfeat)
@@ -669,7 +669,7 @@ if(mpirank==0) then
    end do
 
    write(*,'(3a,i10)') 'Size of the SIS-selected subspace from ',phiname,': ',nsis(iFCDI)
-   if(nsis(iFCDI)<subs_sis) then
+   if(nsis(iFCDI)<subs_sis(iFCDI)) then
    write(*,'(a)') 'WARNING: the actual size of the selected subspace is smaller than that specified in "SISSO.in" !!!'
    end if
    write(9,'(3a,i10)') 'Size of the SIS-selected subspace from ',phiname,': ',nsis(iFCDI)
@@ -1277,7 +1277,7 @@ if(ptype==1) scoretmp=sis_score(feat,trainy_c)
 if(ptype==2)   scoretmp=sis_score(feat,trainy) !classification
 
 if(sis_on) then
- if(scoretmp(1)<score_select(subs_sis,1)) return   
+ if(scoretmp(1)<score_select(subs_sis(iFCDI),1)) return   
 end if
 
 ! should all element be involved ?
@@ -1318,7 +1318,7 @@ fnorm=sqrt(sum(feat**2))
 name_select(nselect)=name_feat
 score_select(nselect,:)=scoretmp
 ftag_select(nselect)=abs(sum(tag*feat))/fnorm/ntask   ! positive for ftag_select; positive & negative for ftag
-if(nselect== 2*subs_sis ) then
+if(nselect== 2*subs_sis(iFCDI) ) then
 call sis_s
 sis_on=.true.
 end if
@@ -1745,7 +1745,7 @@ end do
 if(nfpcore_this(mpirank+1)>0) score=-1   ! initial score
 
 i=0
-do while(i<subs_sis .and. any(pavailable))
+do while(i<subs_sis(iFCDI) .and. any(pavailable))
 
      ! get the scores
      if(ptype==1) then
@@ -1760,7 +1760,7 @@ do while(i<subs_sis .and. any(pavailable))
 
     ! selection starts ...
     k=0
-    do while( k<subs_sis .and. any(pavailable) .and. i<subs_sis)
+    do while( k<subs_sis(iFCDI) .and. any(pavailable) .and. i<subs_sis(iFCDI))
          k=k+1
          i=i+1
 
@@ -2095,8 +2095,8 @@ end function
 subroutine sis_s
 ! delete redundant feature, reduce size to subs_sis
 integer*8 i,j,k,l,ll,order(nselect),n
-real*8 tmpf(ubound(f_select,1),subs_sis),tmpftag(subs_sis),tmpscore(subs_sis,2)
-character(len=lname) tmpname(subs_sis)
+real*8 tmpf(ubound(f_select,1),subs_sis(iFCDI)),tmpftag(subs_sis(iFCDI)),tmpscore(subs_sis(iFCDI),2)
+character(len=lname) tmpname(subs_sis(iFCDI))
 
 ! ordering from large to small
 order(1)=1
@@ -2137,7 +2137,7 @@ do i=2,nselect
   end if
 end do
 
-n=min(n,subs_sis)
+n=min(n,subs_sis(iFCDI))
 do i=1,n
 tmpf(:,i)=f_select(:,order(i))
 tmpname(i)=name_select(order(i))
@@ -2147,7 +2147,7 @@ end do
 
 nselect=n
 f_select(:,:n)=tmpf(:,:n)
-name_select(:subs_sis)=tmpname(:n)
+name_select(:subs_sis(iFCDI))=tmpname(:n)
 ftag_select(:n)=tmpftag(:n)
 score_select(:n,:)=tmpscore(:n,:)
 end subroutine

@@ -10,52 +10,41 @@ from sklearn.model_selection import LeaveOneOut
 
 start=time.time()
 
-# input training file
+# training data
 inp=open('train.dat','r').readlines()
 X=[]
-y_t=np.array([])
-for j in range(1,len(inp)):
-	line=str(inp[j]).split()
+y_train=np.array([])
+for i in range(1,len(inp)):   # from the second line to the last line
+	line=str(inp[i]).split()
 	feat=[]	
-	for j in range(2,len(line)):
+	for j in range(2,len(line)):  # line[0]: name; line[1]: property; line[2] first feature
 		feat.append(float(line[j]))
 	X.append(feat)
-	y_t=np.append(y_t,float(line[1]))
-X_t=np.array(X)
+	y_train=np.append(y_train,float(line[1]))
+X_train=np.array(X)
 
-X_train=X_t
-y_train=y_t
-
-# input prediction file
-#inp=open('predict.dat','rb').readlines()
+# test data
+#inp=open('predict.dat','r').readlines()
 #X=[]
-#y_t=np.array([])
-#for j in range(1,len(inp)):
-#        line=str(inp[j]).split()
+#y_predict=np.array([])
+#for i in range(1,len(inp)):
+#        line=str(inp[i]).split()
 #        feat=[]
-#        for j in range(3,len(line)-1):
+#        for j in range(2,len(line)):
 #                feat.append(float(line[j]))
 #        X.append(feat)
-#        y_t=np.append(y_t,float(line[2]))
-#X_t=np.array(X)
-#
-#X_predict=X_t
-#y_predict=y_t
-
-
-# cv scheme
-#my_cv = LeaveOneOut()
-my_cv =10  # k-fold CV
+#        y_predict=np.append(y_predict,float(line[1]))
+#X_predict=np.array(X)
 
 # rbf kernel
 #clf = GridSearchCV(SVC(kernel='rbf',tol=1e-4,max_iter=-1),
-#         cv=my_cv, n_jobs=-1, verbose=1,
+#         cv=10, n_jobs=-1, verbose=1,
 #         param_grid={"C": np.logspace(0, 6, 30, base=10), 
 #                 "gamma": np.logspace(-6, 2, 30, base=10)},
 #         return_train_score=True,refit=True)
 # Linear kernel
 clf = GridSearchCV(SVC(kernel='linear',tol=1e-4,max_iter=-1),
-         cv=my_cv, n_jobs=-1, verbose=1,
+         cv=10, n_jobs=-1, verbose=1,
          param_grid={"C": np.logspace(1, 5, 10, base=10)},
          return_train_score=True,refit=True)
 
@@ -73,13 +62,14 @@ print("best_params: ")
 print(clf.best_params_) 
 print("best_estimator: ")
 print(clf.best_estimator_) 
-print("coef: ")
+print("coef: (sum(c_i*x_i)+c_0=0) ")
 print(clf.best_estimator_.coef_)
 print("intercept: ")
 print(clf.best_estimator_.intercept_)
 print("support: ")
 print(clf.best_estimator_.support_)
 print(clf.best_estimator_.support_vectors_)
+
 def train_output(X_train,y_train):
     y_pred=clf.predict(X_train)
     er=0
@@ -95,7 +85,6 @@ train_output(X_train,y_train)
 print("training_score (accuracy): ",clf.best_estimator_.score(X_train,y_train))
 
 
-#print("validation: ")
 #def validate_output(X_predict,y_predict):
 #    y_pred=clf.predict(X_predict)
 #    er=0
@@ -107,10 +96,13 @@ print("training_score (accuracy): ",clf.best_estimator_.score(X_train,y_train))
 #              fail_index.append(i)
 #    print('Wrong prediction: Data point ',fail_index)
 #    print("Total number of misclassified data: ",er)
+
+#print("validation: ")
 #validate_output(X_predict,y_predict)
 #print("validation_score (accuracy): ",clf.best_estimator_.score(X_predict,y_predict))
-#
-#
-#end=time.time()
-#print("wall-clock time (seconds):",end-start)
+
+
+
+end=time.time()
+print("wall-clock time (seconds):",end-start)
 #

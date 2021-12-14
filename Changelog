@@ -1,3 +1,18 @@
+v3.0.2
+------
+1. Bug fixed for "restart"
+2. Bug fixed for calculating domain-overlap in classification
+3. The recursive feature construction is made more flexible by allowing a
+different set of operators for each repeat. E.g. with rung=3, opset can be three sets of
+operators separated by comma: opset ='operators set1','operators set2','operators set3'. 
+If opset(1), opset(2),opset(3) are the same, then simply opset='operators set1'.
+4. The SIS-selected subspace size is made more flexible by
+allowing a different size for each dimension. E.g. with desc_dim=3, the
+subs_sis can be set to subs_sis=value1,value2,value3. If value1, value2 and
+value3 are the same, then simply subs_sis=value1.
+5. Tools added to 'utilities': k-fold-cv, leave-percent-out-cv, table of extended Shannon radii.
+
+
 v3.0
 ----
 1. Added new parameters: fit_intercept, isconvex (see SISSO.in for introduction)

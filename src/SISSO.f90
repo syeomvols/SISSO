@@ -20,7 +20,7 @@ use DI
 !-------------------
 
 integer i,j,k,l,icontinue
-character tcontinue*2,nsample_line*500,isconvex_line*500,line*1000000,dimclass*500
+character tcontinue*2,nsample_line*500,isconvex_line*500,line*10000000,dimclass*500
 logical fexist
 
 ! mpi initialization
@@ -41,7 +41,7 @@ if(mpirank==0) then
     if(fexist) call system('mv SISSO.out SISSO.out_old')
  end if
  open(9,file='SISSO.out',status='replace')
- write(9,'(a)') 'Version SISSO.3.0, June, 2019.'
+ write(9,'(a)') 'Version SISSO.3.0.2, June, 2020.'
  write(9,'(a/)')'================================================================================'
 end if
 
@@ -107,14 +107,15 @@ if(mpirank==0) then
 end if
 
 if(restart) then
-  if(mpirank==0) then
   open(funit,file='CONTINUE',status='old')
      read(funit,*) icontinue
      read(funit,'(a)') tcontinue
+     if (tcontinue=='FC') then
+        read(funit,*) nsis(:icontinue-1)
+     else if (tcontinue=='DI') then
+        read(funit,*) nsis(:icontinue)
+     end if
   close(funit)
-  end if
-   call mpi_bcast(icontinue,1,mpi_integer,0,mpi_comm_world,mpierr)
-   call mpi_bcast(tcontinue,2,mpi_character,0,mpi_comm_world,mpierr)
 else
   icontinue=1
   tcontinue='FC'
@@ -250,7 +251,7 @@ subroutine prepare4DI
 ! prepare the union of subspaces
 integer i,j,k,l
 character linename*100
-real*8 feat(sum(nsample),subs_sis*desc_dim),rtmp
+real*8 feat(sum(nsample),sum(subs_sis(:desc_dim))),rtmp
 
 IF(nsis(iFCDI)==0) return
 
@@ -318,10 +319,13 @@ end subroutine
 
 
 subroutine writeCONTINUE(AA)
-character ctmp*4,AA*2
-   write(ctmp(1:2),'(i2.2)') iFCDI
-   write(ctmp(3:4),'(a)') AA
-   call system('echo '//ctmp(1:2)//' >CONTINUE; echo '//ctmp(3:4)//' >>CONTINUE ')
+character AA*2
+2005 format(*(i10))
+   open(1234,file='CONTINUE',status='replace')
+   write(1234,'(i2.2)') iFCDI
+   write(1234,'(a)') AA
+   write(1234,2005) nsis(:iFCDI)
+   close(1234)
 end subroutine
 
 subroutine read_para_a
@@ -362,6 +366,8 @@ do while(.true.)
    read(line_para(i+1:),*,err=1001) vfsize
    case('vf2sf')
    read(line_para(i+1:),*,err=1001) vf2sf
+   case('desc_dim')
+   read(line_para(i+1:),*,err=1001) desc_dim
 !-
    case('dimclass')
      read(line_para(i+1:),'(a)',err=1001) dimclass
@@ -383,18 +389,25 @@ do while(.true.)
    case('npf_must')
    read(line_para(i+1:),*,err=1001) npf_must
    case('opset')
-   read(line_para(i+1:),*,err=1001) opset(1)  ! accept only 1 set
-   opset=opset(1)  ! set every sets the same
+   if(index(line_para(i+1:),',')/=0) then
+       read(line_para(i+1:),*,err=1001) opset(:rung)  ! multiple values
+   else
+       read(line_para(i+1:),*,err=1001) opset(1)  ! one value
+       opset=opset(1)  ! let every set the same
+   end if
 !--
    case('subs_sis')
-   read(line_para(i+1:),*,err=1001) subs_sis
+   if(index(line_para(i+1:),',')/=0) then
+       read(line_para(i+1:),*,err=1001) subs_sis(:desc_dim) ! multiple values
+   else 
+       read(line_para(i+1:),*,err=1001) subs_sis(1) ! one value
+       subs_sis=subs_sis(1)   ! let every subspace the same size
+   end if
    case('ptype')
    read(line_para(i+1:),*,err=1001) ptype
    case('width')
    read(line_para(i+1:),*,err=1001) width
 !--
-   case('desc_dim')
-   read(line_para(i+1:),*,err=1001) desc_dim
    case('nm_output')
    read(line_para(i+1:),*,err=1001) nm_output
    case('metric')
@@ -561,9 +574,9 @@ maxcomplexity=10          ! max feature complexity (number of operators in a fea
 npf_must=0                ! # of 'must selected' primary features with name labeled A, B, C, ... (see the User Guide)
 maxfval_lb=1d-8           ! features having the max. abs. data value <maxfval_lb will not be selected
 maxfval_ub=1d5            ! features having the max. abs. data value >maxfval_ub will not be selected
-rung=1                    ! rung (<=3) of the feature space to be constructed (times of applying the opset recursively)
-subs_sis=1                ! size of the SIS-selected (single) subspace for each descriptor dimension
-opset=''                  ! ONE operator set for feature transformation
+rung=1                    ! rung of the feature space to be constructed (times of applying the opset recursively)
+subs_sis=-1                ! size of the SIS-selected (single) subspace for each descriptor dimension
+opset=''                  ! operator sets for feature transformation
 method='L0'               ! 'L1L0' or 'L0'
 metric='RMSE'             ! metric for model selection: RMSE,MaxAE
 fit_intercept=.true.      ! fit to a nonzero intercept (.true.) or force the intercept to zero (.false.)
@@ -595,38 +608,38 @@ subroutine output_para
    write(9,'(a)') 'Reading parameters from SISSO.in: '
    write(9,'(a)')  '--------------------------------------------------------------------------------'
 !   write(9,'(2a)') 'calc: ',calc
-   write(9,'(a,l6)') 'restarts ?',restart
-   write(9,'(a,i8)') 'descriptor dimension: ',desc_dim
-   write(9,'(a,i3)') 'property type:   ',ptype
-   write(9,'(a,i8)')  'total number of properties: ',ntask
-   write(9,'(a,i8)') 'task_weighting: ',task_weighting
-   write(9,2001)  'number of samples for each property: ',nsample
+   write(9,'(a,l6)') 'Restarts :',restart
+   write(9,'(a,i8)') 'Descriptor dimension: ',desc_dim
+   write(9,'(a,i3)') 'Property type:   ',ptype
+   write(9,'(a,i8)')  'Total number of properties: ',ntask
+   write(9,'(a,i8)') 'Task_weighting: ',task_weighting
+   write(9,2001)  'Number of samples for each property: ',nsample
    if(ptype==2) then
      do i=1,ntask
-      write(9,2003) 'number of samples for the groups of the property ',i,': ',ngroup(i,:ngroup(i,1000))
-      write(9,2003) 'is constrained to be convex domain for the groups of property ',i,': ',isconvex(i,:isconvex(i,1000))
+      write(9,2003) 'Number of samples in each group of the property ',i,': ',ngroup(i,:ngroup(i,1000))
+      write(9,2003) 'Convexity of the data domain of the property ',i,': ',isconvex(i,:isconvex(i,1000))
      end do
-   write(9,'(a,f10.6)') 'boundary tolerance (width) for classification: ',width
+   write(9,'(a,f10.6)') 'Boundary tolerance (width) for classification: ',width
    end if
 
-   write(9,'(a,i8)')  'number of scalar features: ',nsf
+   write(9,'(a,i8)')  'Number of scalar features: ',nsf
    if(nvf>0) then
-   write(9,'(a,i8)')  'number of vector features: ',nvf
-   write(9,'(a,i8)')  'size of the vector features: ',vfsize
-   write(9,'(a,a)')  'how to transform vectors to scalars? ',trim(vf2sf)
+   write(9,'(a,i8)')  'Number of vector features: ',nvf
+   write(9,'(a,i8)')  'Size of the vector features: ',vfsize
+   write(9,'(a,a)')  'How to transform vectors to scalars? ',trim(vf2sf)
    end if
-   write(9,'(a,i8)')  'times of applying the operator set for feature construction (rung of the feature space): ',rung
-   write(9,'(a,i8)')  'max complexity (number of operators in a feature): ',maxcomplexity
-   write(9,'(a,i8)') 'number of dimension(unit)-type (for dimension analysis): ',ndimtype
-   write(9,'(a)') 'dimension type for each primary feature: '
+   write(9,'(a,i8)')  'Number of recursive calls for feature transformation (rung of the feature space): ',rung
+   write(9,'(a,i8)')  'Max feature complexity (number of operators in a feature): ',maxcomplexity
+   write(9,'(a,i8)') 'Number of dimension(unit)-type (for dimension analysis): ',ndimtype
+   write(9,'(a)') 'Dimension type for each primary feature: '
    do i=1,nsf+nvf
      write(9,2002) pfdim(:,i)
    end do
 !   write(9,'(a,i8)')  'number of primary features that must appear in each of the selected features: ',npf_must
-   write(9,'(a,e15.5)') 'lower bound of the max abs. data value for the selected features: ',maxfval_lb
-   write(9,'(a,e15.5)') 'upper bound of the max abs. data value for the selected features: ',maxfval_ub
-   write(9,'(a,i8)') 'Expected size of the SIS-selected (single) subspace : ',subs_sis
-   write(9,2004)  'operator set for feature construction: ',(trim(opset(j)),' ',j=1,1)
+   write(9,'(a,e15.5)') 'Lower bound of the max abs. data value for the selected features: ',maxfval_lb
+   write(9,'(a,e15.5)') 'Upper bound of the max abs. data value for the selected features: ',maxfval_ub
+   write(9,2001) 'Size of the SIS-selected (single) subspace : ',subs_sis(:desc_dim)
+   write(9,2004)  'Operators for feature construction: ',(trim(opset(j)),' ',j=1,rung)
 
    if(trim(adjustl(method))=='L1L0') then
      write(9,'(a,i10)') 'Max iterations for LASSO (with given lambda) to stop: ',L1_max_iter
@@ -636,17 +649,17 @@ subroutine output_para
      write(9,'(a,e20.10)') 'Minimal RMSE for LASSO to stop: ',L1_minrmse
      write(9,'(a,l6)') 'Weighted observations (if yes, provide file prop.weight)? ',L1_weighted
      write(9,'(a,l6)') 'Warm start?  ',L1_warm_start
-     write(9,'(a,e20.10)') 'elastic net: ',L1_elastic
+     write(9,'(a,e20.10)') 'Elastic net: ',L1_elastic
    end if
 
-   write(9,'(a,a)') 'method for sparsification:  ',method
+   write(9,'(a,a)') 'Method for sparsification:  ',method
    if(trim(adjustl(method))=='L1L0') then
-       write(9,'(a,i8)') 'number of screened features by L1 for L0 in L1L0:', L1L0_size4L0
+       write(9,'(a,i8)') 'Number of screened features by L1 for L0 in L1L0:', L1L0_size4L0
    end if
-   write(9,'(a,i8)') 'number of the top ranked models to output: ',nm_output
+   write(9,'(a,i8)') 'Number of the top ranked models to output: ',nm_output
    if(ptype==1) then
-     write(9,'(a,l6)') 'fit intercept? ',fit_intercept
-     write(9,'(a,a)')  'metric for model selection: ',trim(metric)
+     write(9,'(a,l6)') 'Fitting intercept? ',fit_intercept
+     write(9,'(a,a)')  'Metric for model selection: ',trim(metric)
 !     write(9,'(a,i8)') 'Fold of the k-fold CV (descriptor fixed): ',CV_fold
 !     write(9,'(a,i8)') 'Number of repeat for the k-fold CV: ',CV_repeat
    end if

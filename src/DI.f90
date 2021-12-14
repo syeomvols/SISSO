@@ -943,19 +943,20 @@ do idimen=1,dim_DI
                  end if
                  overlap_n=overlap_n+overlap_n_tmp
                  if(overlap_area_tmp>=0) isoverlap=.true.
-                 if(overlap_area_tmp<0.d0) then  ! if separated
-                     if(mindist<overlap_area_tmp) mindist=overlap_area_tmp ! renew the worst separation
-                 else if(overlap_area_tmp>=0.d0 .and. min(area(i),area(j))==0.d0) then ! if overlapped with a 0D feature
-                   overlap_area=overlap_area+1.d0   ! totally overlapped
-                 else if (overlap_area_tmp>=0.d0 .and. min(area(i),area(j))>0.d0) then ! if overlapped without 0D feature
-                   overlap_area=overlap_area+overlap_area_tmp/(min(area(i),area(j)))  ! calculate total overlap
+ 
+                 if(.not. isoverlap) then  ! if separated
+                     if(mindist<overlap_area_tmp) then
+                         mindist=overlap_area_tmp ! renew the worst separation
+                         overlap_area=mindist  ! smaller, better
+                     end if
+                 else 
+                     if(overlap_area_tmp>=0.d0 .and. min(area(i),area(j))==0.d0) then ! if overlapped with a 0D feature
+                         overlap_area=max(0.d0,overlap_area)+1.d0   ! totally overlapped
+                    else if (overlap_area_tmp>=0.d0 .and. min(area(i),area(j))>0.d0) then ! if overlapped without 0D feature
+                         overlap_area=max(0.d0,overlap_area)+overlap_area_tmp/(min(area(i),area(j)))  ! calculate total overlap
+                    end if
                  end if
 
-                if(isoverlap) then
-                   overlap_area=overlap_area/float(nconvexpair) ! smaller, better
-                else
-                   overlap_area=mindist  ! smaller, better
-                end if
               ELSE IF(isconvex(itask,i)==1 .and. isconvex(itask,j)==0) then
                  if(idimen==1) then
                      xtmp1(mm1:mm2,1)=x(mm1:mm2,activeset(ii(idimen)),itask)
@@ -993,6 +994,8 @@ do idimen=1,dim_DI
              end do ! j
            end do ! i
          end do ! itask
+         
+         if(isoverlap)  overlap_area=overlap_area/float(nconvexpair) ! smaller, better
          !----------------------------------
 
       ! store good models 
