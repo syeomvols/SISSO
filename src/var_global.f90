@@ -16,16 +16,17 @@ module var_global
 use mpi
 
 implicit none
-real*8    stime_FCDI,etime_FCDI,stime_FC,etime_FC,stime_DI,etime_DI
-integer   nsf,nvf,ntask,vfsize,ndimtype,maxcomplexity,rung,maxrung,lname,maxcomb,fs_size_DI,fs_size_L0,ptype,&
-          L1_max_iter,L1_nlambda,L1_dens,desc_dim,nm_output,CV_fold,CV_repeat,iFCDI,npf_must,funit,task_weighting
+real*8    stime_FCDI,etime_FCDI,stime_FC,etime_FC,stime_DI,etime_DI,decorr_theta,decorr_delta,decorr_alpha
+integer   nsf,nvf,ntask,vfsize,ndimtype,fcomplexity,rung,maxrung,lname,maxcomb,fs_size_DI,fs_size_L0,ptype,&
+          L1_max_iter,L1_nlambda,L1_dens,desc_dim,nm_output,CV_fold,CV_repeat,iFCDI,funit,task_weighting,&
+          nreaction,npoints,restart
 parameter (lname=150,maxrung=20,maxcomb=10)
-character vf2sf*10,opset(maxrung)*200,method*10,metric*10!,calc*4
+character vf2sf*10,opset(maxrung)*200,method*10,metric*10
 real*8    maxfval_lb,maxfval_ub,width,L1_tole,L1_minrmse,L1_elastic,PI
 integer*8 subs_sis(10000),nsis(10000)
-logical   L1_warm_start,L1_weighted,restart,fit_intercept
-integer,allocatable:: nsample(:),ngroup(:,:),isconvex(:,:)
-real*8,allocatable::  prop_y(:),psfeat(:,:),res(:),pfdim(:,:),pvfeat(:,:,:)
+logical L1_warm_start,L1_weighted,fit_intercept,ffdecorr,scmt
+integer,allocatable:: nsample(:),ngroup(:,:),isconvex(:,:),react_speciesID(:,:)
+real*8,allocatable:: prop_y(:),psfeat(:,:),res(:),pfdim(:,:),pvfeat(:,:,:),react_coeff(:,:)
 character(len=lname),allocatable:: pfname(:)
 parameter (PI=3.14159265358979d0)
 integer   mpierr,mpirank,mpisize,status(MPI_STATUS_SIZE)

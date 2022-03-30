@@ -17,6 +17,7 @@ module DI
 
 use var_global
 use libsisso
+! variables for this module
 integer dim_DI
 
 contains
@@ -38,18 +39,12 @@ real*8 stime_DI,etime_DI
 
 
 if(mpirank==0) stime_DI=mpi_wtime()
-maxns=maxval(nsample)
-!if(trim(adjustl(calc))=='FCDI') then
-  dim_DI=iFCDI
-!else
-!  dim_DI=desc_dim
-!end if
-!
-!if(mpirank==0 .and. trim(adjustl(calc))/='FCDI') then
-!    call system('rm -rf desc_dat')
-!    call system('rm -rf models')
-!    call system('mkdir desc_dat models')
-!end if
+if(nreaction==0) then
+   maxns=maxval(nsample)
+elseif(nreaction>0) then
+   maxns=nreaction
+endif
+dim_DI=iFCDI
 
 !--------------------------
 allocate(xinput(maxns,fs_size_DI,ntask))
@@ -82,31 +77,29 @@ dat_readerr=.true.
 yinput=0
 xinput=0
 do i=1,ntask
-
-!  if(trim(adjustl(calc))=='FCDI') then
-    write(line,'(a,i3.3,a)') 'Uspace_p',i,'.dat'
-!  else
-!    write(line,'(a,i3.3,a)') 'space_p',i,'.dat'
-!  end if
-
+  write(line,'(a,i3.3,a)') 'Uspace_p',i,'.dat'
   if(mpirank==0) then
   open(funit,file='feature_space/'//trim(adjustl(line)),status='old')
-   if(ptype==1) then
-      do j=1,nsample(i)
-         read(funit,*,err=334) yinput(j,i),xinput(j,:,i)
-      end do
-   else
-      do j=1,nsample(i)
-         read(funit,*,err=334) xinput(j,:,i)
-         yinput(j,i)=0.d0  
-      end do
-   end if
+  if(nreaction==0) then
+     if(ptype==1) then
+        do j=1,nsample(i)
+           read(funit,*,err=334) yinput(j,i),xinput(j,:,i)
+        end do
+     else
+        do j=1,nsample(i)
+           read(funit,*,err=334) xinput(j,:,i)
+           yinput(j,i)=0.d0  
+        end do
+     end if
+   elseif(nreaction>0) then ! ptype=1 only for reactionML
+        do j=1,nreaction
+           read(funit,*,err=334) yinput(j,i),xinput(j,:,i)
+        end do
+   end if    
    close(funit)
    end if
-
    call mpi_bcast(yinput,maxns*ntask,mpi_double_precision,0,mpi_comm_world,mpierr)
    call mpi_bcast(xinput,maxns*fs_size_DI*ntask,mpi_double_precision,0,mpi_comm_world,mpierr)
-
 end do
 
 dat_readerr=.false.
@@ -114,11 +107,7 @@ dat_readerr=.false.
 
 
 if(mpirank==0) then
-!  if (trim(adjustl(calc))=='FCDI') then
-    open(funit,file='feature_space/Uspace.name',status='old')
-!  else
-!    open(funit,file='feature_space/space.name',status='old')
-!  end if
+  open(funit,file='feature_space/Uspace.name',status='old')
   
   do i=1,fs_size_DI
   read(funit,'(a)') line
@@ -128,15 +117,18 @@ if(mpirank==0) then
   close(funit)
 end if
 
-  call mpi_bcast(fname,fs_size_DI*200,mpi_character,0,mpi_comm_world,mpierr)
-
+call mpi_bcast(fname,fs_size_DI*200,mpi_character,0,mpi_comm_world,mpierr)
 
 weight=1.0
 if(task_weighting==1) then ! tasks treated equally
   weight=1.0/float(ntask)
 else if(task_weighting==2) then ! tasks weighted by #sample_task_i/total_sample
   do i=1,ntask
-     weight(:,i)=float(nsample(i))/float(sum(nsample))
+     if(nreaction==0) then
+        weight(:,i)=float(nsample(i))/float(sum(nsample))
+     elseif(nreaction>0) then
+        weight(:,i)=1.d0
+     endif
   end do
 end if
 
@@ -144,9 +136,15 @@ if(L1_weighted) then
 open(funit,file='lasso.weight',status='old')
 read(funit,*) ! title line
 do i=1,ntask
-  do j=1,nsample(i)
-    read(funit,*) weight(j,i)
-  end do
+  if(nreaction==0) then
+    do j=1,nsample(i)
+      read(funit,*) weight(j,i)
+    end do
+  elseif(nreaction>0) then
+    do j=1,nreaction
+      read(funit,*) weight(j,i)
+    end do
+  endif   
 end do
 close(funit)
 end if
@@ -201,30 +199,54 @@ if(trim(adjustl(method))=='L1L0' .and. fs_size_DI/=fs_size_L0 .and. ptype==1) th
     if(mpirank==0) write(9,'(a)') 'data standardizing ... '
     !yprime
     do i=1,ntask
-    ymean(i)=sum(yinput(:nsample(i),i))/nsample(i)
-    yprime(:nsample(i),i)=yinput(:nsample(i),i)-ymean(i)
+      if(nreaction==0) then
+        ymean(i)=sum(yinput(:nsample(i),i))/nsample(i)
+        yprime(:nsample(i),i)=yinput(:nsample(i),i)-ymean(i)
+      elseif(nreaction>0) then
+        ymean(i)=sum(yinput(:nreaction,i))/nreaction
+        yprime(:nreaction,i)=yinput(:nreaction,i)-ymean(i)
+      endif
     end do
     
     do i=1,ntask
        !xprime and xdprime
-       do j=1,fs_size_DI
-         xmean(j,i)=sum(xinput(:nsample(i),j,i))/nsample(i)
-         xprime(:nsample(i),j,i)=xinput(:nsample(i),j,i)-xmean(j,i)
-         norm_xprime(j,i)=sqrt(sum(xprime(:nsample(i),j,i)**2))
-         if(abs(norm_xprime(j,i))<1d-10) then
-         if(mpirank==0) print *, 'Error: norm of feature ',j,' of task ',i,' is zero'
-         stop
-         end if
-         xdprime(:nsample(i),j,i)=xprime(:nsample(i),j,i)/norm_xprime(j,i)
-       end do
-       !xty
-       prod_xty(:,i)=matmul(transpose(xdprime(:nsample(i),:,i)),weight(:nsample(i),i)*yprime(:nsample(i),i))
-       !xtx=(xtx)t !prod_xtx(mpii,:)=prod_xtx(:,mpii)
-       do mpii=1,ncol(mpirank+1)
-       prod_xtx(:,mpii,i)=matmul(xdprime(:nsample(i),mpii+sum(ncol(1:mpirank)),i)*weight(:nsample(i),i),&
-                                          xdprime(:nsample(i),:,i))
-       end do
-    
+      if(nreaction==0) then
+         do j=1,fs_size_DI
+           xmean(j,i)=sum(xinput(:nsample(i),j,i))/nsample(i)
+           xprime(:nsample(i),j,i)=xinput(:nsample(i),j,i)-xmean(j,i)
+           norm_xprime(j,i)=sqrt(sum(xprime(:nsample(i),j,i)**2))
+           if(abs(norm_xprime(j,i))<1d-10) then
+           if(mpirank==0) print *, 'Error: norm of feature ',j,' of task ',i,' is zero'
+           stop
+           end if
+           xdprime(:nsample(i),j,i)=xprime(:nsample(i),j,i)/norm_xprime(j,i)
+         end do
+         !xty
+         prod_xty(:,i)=matmul(transpose(xdprime(:nsample(i),:,i)),weight(:nsample(i),i)*yprime(:nsample(i),i))
+         !xtx=(xtx)t !prod_xtx(mpii,:)=prod_xtx(:,mpii)
+         do mpii=1,ncol(mpirank+1)
+         prod_xtx(:,mpii,i)=matmul(xdprime(:nsample(i),mpii+sum(ncol(1:mpirank)),i)*weight(:nsample(i),i),&
+                                            xdprime(:nsample(i),:,i))
+         end do
+      elseif(nreaction>0) then
+         do j=1,fs_size_DI
+           xmean(j,i)=sum(xinput(:nreaction,j,i))/nreaction
+           xprime(:nreaction,j,i)=xinput(:nreaction,j,i)-xmean(j,i)
+           norm_xprime(j,i)=sqrt(sum(xprime(:nreaction,j,i)**2))
+           if(abs(norm_xprime(j,i))<1d-10) then
+           if(mpirank==0) print *, 'Error: norm of feature ',j,' of task ',i,' is zero'
+           stop
+           end if
+           xdprime(:nreaction,j,i)=xprime(:nreaction,j,i)/norm_xprime(j,i)
+         end do
+         !xty
+         prod_xty(:,i)=matmul(transpose(xdprime(:nreaction,:,i)),weight(:nreaction,i)*yprime(:nreaction,i))
+         !xtx=(xtx)t !prod_xtx(mpii,:)=prod_xtx(:,mpii)
+         do mpii=1,ncol(mpirank+1)
+         prod_xtx(:,mpii,i)=matmul(xdprime(:nreaction,mpii+sum(ncol(1:mpirank)),i)*weight(:nreaction,i),&
+                                            xdprime(:nreaction,:,i))
+         end do
+      endif
     end do
     
     !--------------------------------------------------------------------------------------------------------------
@@ -270,8 +292,13 @@ if(trim(adjustl(method))=='L1L0' .and. fs_size_DI/=fs_size_L0 .and. ptype==1) th
         
         ! lasso rmse
         do i=1,ntask
-         lassormse(i)=sqrt(sum(weight(:nsample(i),i)*(yprime(:nsample(i),i)-matmul(xdprime(:nsample(i),:,i),&
+         if(nreaction==0) then
+           lassormse(i)=sqrt(sum(weight(:nsample(i),i)*(yprime(:nsample(i),i)-matmul(xdprime(:nsample(i),:,i),&
                        beta(:,i)))**2)/nsample(i))  ! RMSE
+         elseif(nreaction>0) then
+           lassormse(i)=sqrt(sum(weight(:nreaction,i)*(yprime(:nreaction,i)-matmul(xdprime(:nreaction,:,i),&
+                       beta(:,i)))**2)/nreaction)  ! RMSE
+         endif
         end do
         totalrmse=sqrt(sum(lassormse**2))  ! the 'weight' already considered the averaging.
     
@@ -387,7 +414,7 @@ else if (trim(adjustl(method))=='L0' .or. fs_size_DI==fs_size_L0) then
 end if
 
 
-! release space 
+! release spaces 
 !--------------------
 deallocate(xinput)
 deallocate(yinput)
@@ -398,41 +425,27 @@ deallocate(weight)
 call mpi_barrier(mpi_comm_world,mpierr)
 if(mpirank==0) then
   etime_DI=mpi_wtime()
-  write(9,'(a,f15.2)') 'Wall-clock time (second) for this DI: ',etime_DI-stime_DI
+  write(9,'(a,f15.2)') 'Time (second) used for this DI: ',etime_DI-stime_DI
 end if
 
 end subroutine
 
 
 subroutine model(x,y,fname,nactive,activeset)
-integer nactive,activeset(:),i,j,k,l,loc(1),ii(dim_DI),idimen,select_model(max(nm_output,1),dim_DI),&
-        mID(max(nm_output,1),dim_DI)!,random(maxval(nsample),ntask,CV_repeat)
-integer*8 totalm,bigm,nall,nrecord,nupper,nlower
-real*8  x(:,:,:),y(:,:),tmp,tmp_LS,tmp2_LS,yfit,wrmse(ntask),LSrmse(ntask),LSmaxae(ntask),&
-beta(dim_DI,ntask),intercept(ntask),select_LS(max(nm_output,1)),select_LSmaxae(max(nm_output,1)),&
-select_coeff(max(nm_output,1),dim_DI+1,ntask),mscore(max(nm_output,1),2),select_metric(max(nm_output,1)),&
-mcoeff(max(nm_output,1),dim_DI+1,ntask)
-!select_CV(max(nm_output,1)),select_CVmaxae(max(nm_output,1)),tmp_CV,tmp2_CV,CVrmse(ntask),CVmaxae(ntask)
+integer nactive,activeset(:),i,j,k,l,loc(1),isc,ii(dim_DI),idimen,select_model(max(nm_output,1),dim_DI),&
+        mID(max(nm_output,1),dim_DI),sc_loc(1)
+integer*8 totalm,bigm,nall,nrecord,nupper,nlower,njob(mpisize)
+real*8 x(:,:,:),y(:,:),tmp,tmp2,yfit,wrmse(ntask),rmse(ntask),sc_rmse(2**dim_DI,ntask),maxae(ntask),&
+sc_maxae(2**dim_DI,ntask),beta(dim_DI,ntask),intercept(ntask),select_rmse(max(nm_output,1)),&
+select_score(max(nm_output,1),2,1+ntask),select_maxae(max(nm_output,1)),&
+select_coeff(max(nm_output,1),dim_DI+1,ntask),mscore(max(nm_output,1),2,1+ntask),&
+select_metric(max(nm_output,1)),mcoeff(max(nm_output,1),dim_DI+1,ntask),sc_beta(dim_DI,2**dim_DI,ntask),&
+sc_intercept(2**dim_DI,ntask),sc_tmp(2**dim_DI),sc_tmp2(2**dim_DI),mpicollect(mpisize)
 character fname(:)*200,line_name*100
 logical isgood
-integer*8 njob(mpisize)
-real*8 mpicollect(mpisize)
 real   progress
-! model scores: RMSE,MaxAE,CV_RMSE,CV_MaxAE
 
 if(nm_output<1) nm_output=1
-
-
-if(mpirank==0) then
-write(9,'(a)') 'L0 starts ...'
-end if
-
-! generation of random order for repeated k-fold CV
-!do k=1,CV_repeat  
-! do i=1,ntask
-!  call rand_order(random(:nsample(i),i,k))
-! end do
-!end do
 
 do idimen=1,dim_DI
 
@@ -454,10 +467,8 @@ do idimen=1,dim_DI
    end do
 
    ! initialization   
-   select_LS=10*maxval(abs(y))
-   select_LSmaxae=10*maxval(abs(y))
-!   select_CV=10*maxval(abs(y))
-!   select_CVmaxae=10*maxval(abs(y))
+   select_rmse=10*maxval(abs(y))
+   select_maxae=10*maxval(abs(y))
    totalm=0
 
 ! get the best nm_output models on each CPU core
@@ -477,78 +488,128 @@ do idimen=1,dim_DI
       if( nrecord> nupper) exit
 
       if(float(nrecord-nlower+1)/float(njob(mpirank+1))>=progress) then
-        write(*,'(a,i4,a,i4,a,f6.1,a)') 'dimension=',idimen,'    mpirank= ',mpirank,'    progress =',progress*100,'%'
+       write(*,'(a,i4,a,i4,a,f6.1,a)') 'dimension =',idimen,'   mpirank = ',mpirank,'   progress =',progress*100,'%'
         progress=progress+0.2
       end if
 
-      !  LS and CV of this model
       if ( trim(adjustl(metric))=='RMSE' .or. trim(adjustl(metric))=='MaxAE') then
          do i=1,ntask
-         if(fit_intercept) then
-         call orth_de(x(:nsample(i),[activeset(ii(:idimen))],i),y(:nsample(i),i),intercept(i),beta(:idimen,i),LSrmse(i))
-         else
-         call orth_de_nointercept(x(:nsample(i),[activeset(ii(:idimen))],i),y(:nsample(i),i),beta(:idimen,i),LSrmse(i))
-         intercept(i)=0.d0
-         end if
-         if(isnan(LSrmse(i))) then
-            LSrmse(i)=sum(abs(y(:nsample(i),i)))
-            intercept(i)=0.d0
-            beta(:idimen,i)=0.d0
-         end if
-         LSmaxae(i)= &
-          maxval(abs(y(:nsample(i),i)-(intercept(i)+matmul(x(:nsample(i),[activeset(ii(:idimen))],i),beta(:idimen,i)))))
+         if(nreaction==0) then
+            if(.not. scmt) then
+                 if(fit_intercept) then
+                    call orth_de(x(:nsample(i),[activeset(ii(:idimen))],i),y(:nsample(i),i),&
+                                 intercept(i),beta(:idimen,i),rmse(i))
+                 else
+                    call orth_de_nointercept(x(:nsample(i),[activeset(ii(:idimen))],i),y(:nsample(i),i),&
+                                             beta(:idimen,i),rmse(i))
+                    intercept(i)=0.d0
+                 end if
+                 if(isnan(rmse(i))) then
+                    rmse(i)=sqrt(sum((y(:nsample(i),i)-sum(y(:nsample(i),i))/nsample(i))**2)/nsample(i))
+                    intercept(i)=sum(y(:nsample(i),i))/nsample(i)
+                    beta(:idimen,i)=0.d0
+                 end if
+                 maxae(i)= maxval(abs(y(:nsample(i),i)-(intercept(i)+matmul(x(:nsample(i),&
+                                  [activeset(ii(:idimen))],i),beta(:idimen,i)))))
+            else  ! sign-constrained multi-task learning
+                 if(fit_intercept) then
+                    call sc_coord_descent(x(:nsample(i),[activeset(ii(:idimen))],i),y(:nsample(i),i),10000,1d-5,&
+                         idimen,sc_intercept(:2**idimen,i),sc_beta(:idimen,:2**idimen,i),sc_rmse(:2**idimen,i))
+                 else
+                    call sc_coord_descent_nointercept(x(:nsample(i),[activeset(ii(:idimen))],i),y(:nsample(i),i),&
+                         10000,1d-5,idimen,sc_beta(:idimen,:2**idimen,i),sc_rmse(:2**idimen,i))
+                    sc_intercept(:2**idimen,i)=0.d0
+                 end if
+                 if(isnan(rmse(i))) then
+                    sc_rmse(:,i)=sqrt(sum((y(:nsample(i),i)-sum(y(:nsample(i),i))/nsample(i))**2)/nsample(i))
+                    sc_intercept(:,i)=sum(y(:nsample(i),i))/nsample(i)
+                    sc_beta(:idimen,:,i)=0.d0
+                 end if
+                 do isc=1,2**idimen
+                    sc_maxae(isc,i)=maxval(abs(y(:nsample(i),i)-(sc_intercept(isc,i)+matmul(x(:nsample(i),&
+                                  [activeset(ii(:idimen))],i),sc_beta(:idimen,isc,i)))))
+                 end do
+            end if
+         elseif(nreaction>0) then
+            if(fit_intercept) then
+                call orth_de(x(:nreaction,[activeset(ii(:idimen))],i),y(:nreaction,i),intercept(i),&
+                             beta(:idimen,i),rmse(i))
+            else
+                call orth_de_nointercept(x(:nreaction,[activeset(ii(:idimen))],i),y(:nreaction,i),&
+                                         beta(:idimen,i),rmse(i))
+                intercept(i)=0.d0
+            end if
+            if(isnan(rmse(i))) then
+               rmse(i)=sqrt(sum((y(:nreaction,i)-sum(y(:nreaction,i))/nreaction)**2)/nreaction)
+               intercept(i)=sum(y(:nreaction,i))/nreaction
+               beta(:idimen,i)=0.d0
+            end if
+            maxae(i)=maxval(abs(y(:nreaction,i)-(intercept(i)+matmul(x(:nreaction,[activeset(ii(:idimen))],i),&
+                        beta(:idimen,i)))))
+         endif
          end do
 
-         if(task_weighting==1) then
-            tmp_LS=sqrt(sum(LSrmse**2)/ntask)  !overall error
-         else if(task_weighting==2) then
-            tmp_LS=sqrt(sum((LSrmse**2)*nsample)/sum(nsample))
+         if( scmt ) then  ! best choice of coeff. signs
+             do isc=1,2**idimen
+                 if(task_weighting==1) then
+                     sc_tmp(isc)=sqrt(sum(sc_rmse(isc,:)**2)/ntask)
+                 else if(task_weighting==2) then
+                     sc_tmp(isc)=sqrt(sum((sc_rmse(isc,:)**2)*nsample)/sum(nsample))
+                 end if
+                 sc_tmp2(isc)=maxval(sc_maxae(isc,:))
+             end do
+             if( trim(adjustl(metric))=='RMSE' ) then
+                tmp=minval(sc_tmp)
+                sc_loc=minloc(sc_tmp)
+                tmp2=sc_tmp2(sc_loc(1))
+             elseif( trim(adjustl(metric))=='MaxAE' ) then
+                tmp2=minval(sc_tmp2)
+                sc_loc=minloc(sc_tmp2)
+                tmp=sc_tmp(sc_loc(1))
+             endif
+         else
+              if(task_weighting==1) then
+                 tmp=sqrt(sum(rmse**2)/ntask)  !overall error
+              else if(task_weighting==2) then
+                 if(nreaction==0) then
+                    tmp=sqrt(sum((rmse**2)*nsample)/sum(nsample))
+                 elseif(nreaction>0) then
+                    tmp=rmse(1)
+                 endif
+              end if
+              tmp2=maxval(maxae)        ! max(maxAE)
          end if
-         tmp2_LS=maxval(LSmaxae)        ! max(maxAE)
-
-    !  else if ( trim(adjustl(metric))=='CV_RMSE' .or.  trim(adjustl(metric))=='CV_MaxAE') then
-    !     do i=1,ntask
-    !      CVrmse(i)=0.0
-    !      CVmaxae(i)=0.0
-    !      do j=1,CV_repeat
-    !     call foldCV(x(:nsample(i),[activeset(ii(:idimen))],i),y(:nsample(i),i),random(:nsample(i),i,j),tmp_CV,tmp2_CV)
-    !     CVrmse(i)=CVrmse(i)+tmp_CV**2  ! quadratic sum
-    !     CVmaxae(i)=CVmaxae(i)+tmp2_CV**2
-    !      end do
-    !     end do
-    !     tmp_CV=sqrt(sum(CVrmse)/CV_repeat/ntask)  ! quadratic mean
-    !     tmp2_CV=sqrt(sum(CVmaxae)/CV_repeat/ntask)
       end if
     
       isgood=.false.
-      if ( trim(adjustl(metric))=='RMSE' .and. any(tmp_LS <select_LS)) then
+      if ( trim(adjustl(metric))=='RMSE' .and. any(tmp <select_rmse)) then
          isgood = .true.
-         loc=maxloc(select_LS)
-      else if ( trim(adjustl(metric))=='MaxAE' .and. any(tmp2_ls <select_LSmaxae)) then
+         loc=maxloc(select_rmse)
+      else if ( trim(adjustl(metric))=='MaxAE' .and. any(tmp2 <select_maxae)) then
          isgood = .true.
-         loc=maxloc(select_LSmaxae)
-   !   else if ( trim(adjustl(metric))=='CV_RMSE' .and. any(tmp_CV <select_CV)) then
-   !      isgood = .true.
-   !      loc=maxloc(select_CV)
-   !   else if ( trim(adjustl(metric))=='CV_MaxAE' .and. any(tmp2_CV <select_CVmaxae)) then
-   !      isgood = .true.
-   !      loc=maxloc(select_CVmaxae)
+         loc=maxloc(select_maxae)
       end if
 
-      ! store good models with best RMSE
+      ! accept this model
       if (isgood) then
          totalm=totalm+1
-         if ( trim(adjustl(metric))=='RMSE' .or. trim(adjustl(metric))=='MaxAE') then
-           select_LS(loc(1))=tmp_LS
-           select_LSmaxae(loc(1))=tmp2_LS
-       !  else if (trim(adjustl(metric))=='CV_RMSE' .or. trim(adjustl(metric))=='CV_MaxAE') then
-       !    select_CV(loc(1))=tmp_CV
-       !    select_CVmaxae(loc(1))=tmp2_CV
-         end if
+         select_rmse(loc(1))=tmp
+         select_maxae(loc(1))=tmp2
          select_model(loc(1),:idimen)=activeset(ii(:idimen))
+         select_score(loc(1),1,1)=tmp
+         select_score(loc(1),2,1)=tmp2
          do i=1,ntask
-             select_coeff(loc(1),1,i)=intercept(i)
-             select_coeff(loc(1),2:idimen+1,i)=beta(:idimen,i)
+             if( scmt ) then
+               select_coeff(loc(1),1,i)=sc_intercept(sc_loc(1),i)
+               select_coeff(loc(1),2:idimen+1,i)=sc_beta(:idimen,sc_loc(1),i)
+               select_score(loc(1),1,1+i)=sc_rmse(sc_loc(1),i)
+               select_score(loc(1),2,1+i)=sc_maxae(sc_loc(1),i)
+             else
+               select_coeff(loc(1),1,i)=intercept(i)
+               select_coeff(loc(1),2:idimen+1,i)=beta(:idimen,i)
+               select_score(loc(1),1,1+i)=rmse(i)
+               select_score(loc(1),2,1+i)=maxae(i)
+             end if
          end do
       end if
 
@@ -569,50 +630,7 @@ do idimen=1,dim_DI
       goto 123
    end do
 
-! calculate all errors of the nm_output model
-!   do k=1,min(int8(nm_output),totalm)
-!      if ( trim(adjustl(metric))/='RMSE' .and. trim(adjustl(metric))/='MaxAE') then
-!         do i=1,ntask
-!        if(fit_intercept) then
-!        call orth_de(x(:nsample(i),[select_model(k,:idimen)],i),y(:nsample(i),i),intercept(i),beta(:idimen,i),LSrmse(i))
-!        else
-!        call orth_de_nointercept(x(:nsample(i),[select_model(k,:idimen)],i),y(:nsample(i),i),beta(:idimen,i),LSrmse(i))
-!        intercept(i)=0.d0
-!        end if
-!         if(isnan(LSrmse(i))) then
-!            LSrmse(i)=sum(abs(y(:nsample(i),i)))
-!            intercept(i)=0.d0
-!            beta(:idimen,i)=0.d0
-!         end if
-!          LSmaxae(i)= &
-!         maxval(abs(y(:nsample(i),i)-(intercept(i)+matmul(x(:nsample(i),[select_model(k,:idimen)],i),beta(:idimen,i)))))
-!         end do
-!
-!         if(task_weighting==1) then  ! tasks are treated equally
-!            select_LS(k)=sqrt(sum(LSrmse**2)/ntask)  !overall error
-!         else if(task_weighting==2) then  ! weighted by sample size
-!            select_LS(k)=sqrt(sum((LSrmse**2)*nsample)/sum(nsample))
-!         end if
-!         select_LSmaxae(k)=maxval(LSmaxae)        ! max(maxAE)
-!
-    !  else if ( trim(adjustl(metric))/='CV_RMSE' .and.  trim(adjustl(metric))/='CV_MaxAE') then
-    !     do i=1,ntask
-    !      CVrmse(i)=0.0
-    !      CVmaxae(i)=0.0
-    !      do j=1,CV_repeat
-    !     call foldCV(x(:nsample(i),[select_model(k,:idimen)],i),y(:nsample(i),i),random(:nsample(i),i,j),tmp_CV,tmp2_CV)
-    !       CVrmse(i)=CVrmse(i)+tmp_CV**2  ! total sqaured error
-    !       CVmaxae(i)=CVmaxae(i)+tmp2_CV**2
-    !      end do
-    !     end do
-    !     select_CV(k)=sqrt(sum(CVrmse)/CV_repeat/ntask)  ! overall CV RMSE
-    !     select_CVmaxae(k)=sqrt(sum(CVmaxae)/CV_repeat/ntask)
-!      end if
-!   end do
-
-
 ! collecting the best models
-! select_model,select_LS,select_LSmaxae,select_CV,select_CVmaxae,mID,mscore(RMSE,MaxAE,CV_RMSE,CV_MaxAE)
    if(mpirank>0) then
      call mpi_send(totalm,1,mpi_integer8,0,1,mpi_comm_world,mpierr)
    else
@@ -624,13 +642,9 @@ do idimen=1,dim_DI
    call mpi_bcast(totalm,1,mpi_integer8,0,mpi_comm_world,mpierr)
 
    if(trim(adjustl(metric))=='RMSE') then
-     select_metric=select_LS
+     select_metric=select_rmse
    else if (trim(adjustl(metric))=='MaxAE') then
-     select_metric=select_LSmaxae     
-!   else if (trim(adjustl(metric))=='CV_RMSE') then
-!     select_metric=select_CV
-!   else if (trim(adjustl(metric))=='CV_MaxAE') then
-!     select_metric=select_CVmaxae
+     select_metric=select_maxae     
    end if
 
    do j=1,min(int8(nm_output),totalm)
@@ -650,54 +664,24 @@ do idimen=1,dim_DI
       if(mpirank==loc(1)-1) then
         mID(j,:idimen)=select_model(k,:idimen)
         mcoeff(j,:idimen+1,:)=select_coeff(k,:idimen+1,:)
-        mscore(j,:2)=(/select_LS(k),select_LSmaxae(k)/)
+        mscore(j,:2,:)=select_score(k,:2,:)
         select_metric(k)=10*maxval(abs(y))
       end if
       call mpi_bcast(mID(j,:idimen),idimen,mpi_integer,loc(1)-1,mpi_comm_world,mpierr)
-      call mpi_bcast(mscore(j,:2),2,mpi_double_precision,loc(1)-1,mpi_comm_world,mpierr)
+      call mpi_bcast(mscore(j,:2,:),2*(1+ntask),mpi_double_precision,loc(1)-1,mpi_comm_world,mpierr)
       call mpi_bcast(mcoeff(j,:idimen+1,:),(idimen+1)*ntask,mpi_double_precision,loc(1)-1,mpi_comm_world,mpierr)
    end do
  
 
    if(mpirank==0) then
-      ! LSRMSE, LSmaxae, CVRMSE,CVmaxae of the best model
-      do i=1,ntask
-        ! LS
-        if(fit_intercept) then
-           call orth_de(x(:nsample(i),[mID(1,:idimen)],i),y(:nsample(i),i),intercept(i),beta(:idimen,i),LSrmse(i))
-        else
-           call orth_de_nointercept(x(:nsample(i),[mID(1,:idimen)],i),y(:nsample(i),i),beta(:idimen,i),LSrmse(i))
-           intercept(i)=0.d0
-        end if
-         if(isnan(LSrmse(i))) then
-            LSrmse(i)=sum(abs(y(:nsample(i),i)))
-            intercept(i)=0.d0
-            beta(:idimen,i)=0.d0
-         end if
-         LSmaxae(i)= &
-           maxval(abs(y(:nsample(i),i)-(intercept(i)+matmul(x(:nsample(i),[mID(1,:idimen)],i),beta(:idimen,i)))))
-        ! CV
-      !  CVrmse(i)=0.0
-      !  CVmaxae(i)=0.0
-      !  do k=1,CV_repeat
-      !    call foldCV(x(:nsample(i),[mID(1,:idimen)],i),y(:nsample(i),i),random(:nsample(i),i,k),tmp_CV,tmp2_CV)
-      !    CVrmse(i)=CVrmse(i)+tmp_CV**2 ! sum of RMSE**2
-      !    CVmaxae(i)=CVmaxae(i)+tmp2_CV**2
-      !  end do
-      end do
-     ! CVrmse=sqrt(CVrmse/CV_repeat) ! average over repeated CV
-     ! CVmaxae=sqrt(CVmaxae/CV_repeat)   ! average over repeated CV
-
-      call writeout(idimen,mID(1,:idimen),LSrmse,LSmaxae,beta,intercept,x,y,fname)
-!      call writeout(idimen,mID(1,:idimen),LSrmse,LSmaxae,beta,intercept,x,y,fname,CVrmse,CVmaxae)
-
+      call writeout(idimen,mID(1,:idimen),mscore(1,1,2:1+ntask),mscore(1,2,2:1+ntask),&
+                    mcoeff(1,2:,:),mcoeff(1,1,:),x,y,fname)
       write(line_name,'(a,i4.4,a,i3.3,a)') 'top',min(int8(nm_output),totalm),'_',idimen,'d'
       open(funit,file='models/'//trim(adjustl(line_name)),status='replace')
       write(funit,'(4a12)') 'Rank','RMSE','MaxAE','Feature_ID'
-!      write(111,'(6a12)') 'Rank','RMSE','MaxAE','CV_RMSE','CV_maxAE','Feature_ID'
 2008  format(i12,2f12.6,a,*(i8))
       do i=1,min(int8(nm_output),totalm)
-        write(funit,2008,advance='no') i,mscore(i,:),'  (',mID(i,:idimen)
+        write(funit,2008,advance='no') i,mscore(i,:,1),'  (',mID(i,:idimen)
         write(funit,'(a)') ')'
       end do
       close(funit)
@@ -719,28 +703,28 @@ call mpi_barrier(mpi_comm_world,mpierr)
 end subroutine
 
 
-subroutine writeout(idimen,id,LSrmse,LSmaxae,betamin,interceptmin,x,y,fname)
-!subroutine writeout(idimen,id,LSrmse,LSmaxae,betamin,interceptmin,x,y,fname,CVrmse,CVmaxae)
+subroutine writeout(idimen,id,rmse,maxae,betamin,interceptmin,x,y,fname)
 integer idimen,i,j,id(:),k
-real*8 LSrmse(:),LSmaxae(:),betamin(:,:),interceptmin(:),x(:,:,:),y(:,:),yfit!,CVrmse(:),CVmaxae(:)
+real*8 rmse(:),maxae(:),betamin(:,:),interceptmin(:),x(:,:,:),y(:,:),yfit
 character fname(:)*200,line_name*100
 
 if(idimen==desc_dim) then ! .and. trim(adjustl(calc))=='FCDI') then
-  write(9,'(/a)')  'Final model/descriptor to report'
-else if(idimen<desc_dim) then ! .and. trim(adjustl(calc))=='FCDI') then
-  write(9,'(/a)')  'Model/descriptor for generating residual:'
-!else if(trim(adjustl(calc))=='DI') then
-!  write(9,'(/a)')  'Model/descriptor to report'
-end if
+  write(9,'(/a)')  'Final model/descriptor !'
   write(9,'(a)')'================================================================================'
+!else if(idimen<desc_dim) then ! .and. trim(adjustl(calc))=='FCDI') then
+!  write(9,'(/a)')  'Model/descriptor for generating residual:'
+end if
 write(9,'(i3,a)') idimen,'D descriptor (model): '
 
 if(task_weighting==1) then  ! tasks are treated equally
-   write(9,'(a,2f10.6)')  'Total RMSE,MaxAE: ',sqrt(sum(LSrmse**2)/ntask),maxval(LSmaxae)
+   write(9,'(a,2f10.6)')  'RMSE and MaxAE: ',sqrt(sum(rmse**2)/ntask),maxval(maxae)
 else if(task_weighting==2) then  ! weighted by sample size
-   write(9,'(a,2f10.6)')  'Total RMSE,MaxAE: ',sqrt(sum((LSrmse**2)*nsample)/sum(nsample)),maxval(LSmaxae)
+   if(nreaction==0) then
+     write(9,'(a,2f10.6)')  'RMSE and MaxAE: ',sqrt(sum((rmse**2)*nsample)/sum(nsample)),maxval(maxae)
+   elseif(nreaction>0) then
+     write(9,'(a,2f10.6)')  'RMSE and MaxAE: ',rmse,maxval(maxae)
+   endif
 end if
-!,sqrt(sum(CVrmse**2)/ntask),sqrt(sum(CVmaxae**2)/ntask)
 
 write(9,'(a)')  '@@@descriptor: '
 do i=1,idimen
@@ -755,71 +739,40 @@ end do
 do i=1,ntask
   write(9,2009) ' coefficients_',i,': ', betamin(:idimen,i)
   write(9,'(a20,i3.3,a2,e20.10)') '  Intercept_',i,': ', interceptmin(i)
-  write(9,'(a20,i3.3,a2,2e20.10)') ' RMSE,MaxAE_',i,': ', LSrmse(i),LSmaxae(i)
-!  write(9,'(a20,i3.3,a2,2e20.10)') ' CVrmse,maxAE_',i,': ', CVrmse(i),CVmaxae(i)
+  write(9,'(a20,i3.3,a2,2e20.10)') ' RMSE,MaxAE_',i,': ', rmse(i),maxae(i)
   write(line_name,'(a,i3.3,a,i3.3,a)') 'desc_',idimen,'d_p',i,'.dat'
   open(funit,file='desc_dat/'//trim(adjustl(line_name)),status='replace')
   write(funit,2011) 'Index','y_measurement','y_fitting',('descriptor_',j,j=1,idimen)
-  do j=1,nsample(i)
-     yfit=interceptmin(i)+sum(x(j,[id(:idimen)],i)*betamin(:idimen,i))
-     write(funit,2012) j,y(j,i),yfit,x(j,[id(:idimen)],i)
-  end do
+  if(nreaction==0) then
+    do j=1,nsample(i)
+       yfit=interceptmin(i)+sum(x(j,[id(:idimen)],i)*betamin(:idimen,i))
+       write(funit,2012) j,y(j,i),yfit,x(j,[id(:idimen)],i)
+    end do
+  elseif(nreaction>0) then
+    do j=1,nreaction
+       yfit=interceptmin(i)+sum(x(j,[id(:idimen)],i)*betamin(:idimen,i))
+       write(funit,2012) j,y(j,i),yfit,x(j,[id(:idimen)],i)
+    end do
+  endif
   close(funit)
 end do
-write(9,'(a)')'================================================================================'
+
+if(idimen==desc_dim) then 
+  if(ntask>1) then
+     if(task_weighting==1) then
+     write(9,'(a,f10.6)') ' RMSE(task_weighting=1) = sqrt(sum(RMSE_i^2)/ntask) = ',sqrt(sum(rmse**2)/ntask)
+     else if(task_weighting==2) then
+     write(9,'(a,f10.6)') ' RMSE(task_weighting=2) = sqrt(sum(RMSE_i^2*n_i)/sum(n_i)) = ', &
+                           sqrt(sum((rmse**2)*nsample)/sum(nsample))
+     end if
+     write(9,'(a,f10.6)') ' MaxAE = max(MaxAE_i) = ',maxval(maxae)
+  end if
+  write(9,'(a)')'================================================================================'
+else
+  write(9,'(a)')'--------------------------------------------------------------------------------'
+end if
 
 end subroutine
-
-
-!subroutine foldCV(x,y,random,CVrmse,CVmaxae)
-!! output CVrmse, CVmaxae
-!integer ns,fold,random(:),mm1,mm2,mm3,mm4,i,j,k,kk,l
-!real*8 x(:,:),y(:),beta(ubound(x,2)),intercept,rmse,CVse(CV_fold),CVrmse,CVmaxae,pred(ubound(y,1))
-!
-!ns=ubound(y,1)
-!CVmaxae=0
-!CVrmse=0
-!fold=CV_fold
-!if(fold>ns) fold=ns
-!
-!k=int(ns/fold)
-!kk=mod(ns,fold)
-!do l=1,fold
-!   mm1=1  ! sample start
-!   mm2=ns      ! sample end
-!   mm3=(l-1)*k+min((l-1),kk)+1 ! test start
-!   mm4=mm3+k-1+int(min(l,kk)/l)  ! test end
-!   if(mm1==mm3) then
-!      call orth_de(x([random(mm4+1:mm2)],:),y([random(mm4+1:mm2)]),intercept,beta(:),rmse)
-!   else if(mm4==mm2) then
-!      call orth_de(x([random(mm1:mm3-1)],:),y([random(mm1:mm3-1)]),intercept,beta(:),rmse)
-!   else
-!      call orth_de(x([random(mm1:mm3-1),random(mm4+1:mm2)],:),&
-!                   y([random(mm1:mm3-1),random(mm4+1:mm2)]),intercept,beta(:),rmse)
-!   end if
-!   pred(mm3:mm4)=(intercept+matmul(x([random(mm3:mm4)],:),beta(:)))
-!end do
-!CVmaxae=maxval(abs(y([random])-pred))
-!CVrmse=sqrt(sum((y([random])-pred)**2)/ns)  ! RMSE
-!
-!end subroutine
-
-!subroutine rand_order(random)
-!! prepare random number for CV
-!integer random(:),i,j,k,ns
-!real tmp
-!ns=ubound(random,1)
-!random=0
-!   j=0
-!   do while(j<ns)
-!      call random_number(tmp)
-!      k=ceiling(tmp*ns)
-!      if(all(k/=random)) then
-!      j=j+1
-!      random(j)=k
-!      end if
-!   end do
-!end subroutine
 
 
 ! descriptor for classification
@@ -829,7 +782,7 @@ idimen,select_model(max(nm_output,1),dim_DI),mID(max(nm_output,1),dim_DI),overla
 select_overlap_n(max(nm_output,1)),nh,ntri,nconvexpair
 integer*8 totalm,bigm,nall,nrecord,nlower,nupper
 real*8  x(:,:,:),mscore(max(nm_output,1),2),overlap_area,overlap_area_tmp,select_overlap_area(max(nm_output,1)),&
-hull(maxval(nsample),2),area(maxval(ngroup(:,1000))),mindist,xtmp1(ubound(x,1),3),xtmp2(ubound(x,1),3)
+hull(ubound(x,1),2),area(maxval(ngroup(:,1000))),mindist,xtmp1(ubound(x,1),3),xtmp2(ubound(x,1),3)
 character fname(:)*200,line_name*100
 integer*8 njob(mpisize)
 real*8 mpicollect(mpisize,2)
@@ -838,10 +791,6 @@ real progress
 integer,allocatable:: triangles(:,:)
 
 if(nm_output<1) nm_output=1
-
-if(mpirank==0) then
-write(9,'(a)') 'L0 starts ...'
-end if
 
 do idimen=1,dim_DI
 
@@ -885,7 +834,7 @@ do idimen=1,dim_DI
       if( nrecord> nupper) exit
 
       if(float(nrecord-nlower+1)/float(njob(mpirank+1))>=progress) then
-        write(*,'(a,i4,a,i4,a,f6.1,a)') 'dimension=',idimen,'    mpirank= ',mpirank,'    progress =',progress*100,'%'
+        write(*,'(a,i4,a,i4,a,f6.1,a)') 'dimension =',idimen,'   mpirank =',mpirank,'   progress =',progress*100,'%'
         progress=progress+0.2
       end if
 
@@ -950,10 +899,10 @@ do idimen=1,dim_DI
                          overlap_area=mindist  ! smaller, better
                      end if
                  else 
-                     if(overlap_area_tmp>=0.d0 .and. min(area(i),area(j))==0.d0) then ! if overlapped with a 0D feature
+                     if(overlap_area_tmp>=0.d0 .and. min(area(i),area(j))==0.d0) then !  0D feature
                          overlap_area=max(0.d0,overlap_area)+1.d0   ! totally overlapped
-                    else if (overlap_area_tmp>=0.d0 .and. min(area(i),area(j))>0.d0) then ! if overlapped without 0D feature
-                         overlap_area=max(0.d0,overlap_area)+overlap_area_tmp/(min(area(i),area(j)))  ! calculate total overlap
+                    else if (overlap_area_tmp>=0.d0 .and. min(area(i),area(j))>0.d0) then ! not 0D feature
+                         overlap_area=max(0.d0,overlap_area)+overlap_area_tmp/(min(area(i),area(j)))  ! total overlap
                     end if
                  end if
 
@@ -1192,14 +1141,13 @@ do itask=1,ntask
   close(funit)
 end do
 
-if(idimen==desc_dim) then ! .and. trim(adjustl(calc))=='FCDI') then
-  write(9,'(/a)')  'Final model/descriptor to report'
-else if(idimen<desc_dim) then ! .and. trim(adjustl(calc))=='FCDI') then
-  write(9,'(/a)')  'Model/descriptor for generating residual:'
-!else if(trim(adjustl(calc))=='DI') then
-!  write(9,'(/a)')  'Model/descriptor to report' 
+if(idimen==desc_dim) then
+  write(9,'(/a)')  'Final model/descriptor !'
+  write(9,'(a)')'================================================================================'
+!else if(idimen<desc_dim) then 
+!  write(9,'(/a)')  'Model/descriptor for generating residual:'
 end if
-write(9,'(a)')'================================================================================'
+
 write(9,'(i3,a)') idimen,'D descriptor (model): '
 write(9,'(a,i10)') 'Number of data in all overlap regions:',int(mscore(1,1))
 convexpair=.false.
@@ -1211,15 +1159,20 @@ do itask=1,ntask
   end do
 end do
 if(idimen<=2 .and. convexpair) then
+  write(9,'(a,i10)') 'Actual number (without double counting) of data in all overlap regions: ', ndata_ol
   write(9,'(a,f15.5)') 'Size of the overlap:',mscore(1,2)
-  write(9,'(a)') 'Note: >0, overlap-size; <0, distance (absolute value) between separated domains'
+  write(9,'(a)') 'Note: negative value indicates no overlap (magnitude being distance of separation)'
 end if
-write(9,'(a,i10)') 'Actual number (without double counting) of data in all overlap regions: ', ndata_ol
 write(9,'(a)')  '@@@descriptor: '
 do i=1,idimen
 write(9,'(i23,3a)') id(i),':[',trim(adjustl(fname(id(i)))),']'
 end do
-write(9,'(a)')'================================================================================'
+
+if(idimen==desc_dim) then
+  write(9,'(a)')'================================================================================'
+else
+  write(9,'(a)')'--------------------------------------------------------------------------------'
+end if
 
 end subroutine
 

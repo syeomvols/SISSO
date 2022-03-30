@@ -1,5 +1,5 @@
 program SISSO_predict
-! read the descriptors from SISSO.out and make prediction on test data
+! read the models from SISSO.out and make prediction on test data
 ! input files: predict.dat which has the same format with that of train.dat
 ! input files: SISSO_predict_para which contains the needed parameters for this program to run.
 !              Format: line1, number of samples in "predict.dat"; line2, number of features in "predict.dat"; 
@@ -8,7 +8,7 @@ program SISSO_predict
 ! output files: predict_X.out, descriptor coordinates of the test materials; 
 !               predict_Y.out, predicted values of the target property of the test materials
 
-! Note: please make sure that no operator name is used for the feature names.
+! Note: please make sure that no operator name is used in the feature names.
 ! E.g.: if one feature is named 'a', then 'abs()' will be mistakenly translated as xxxbs(), where xxx is the value of 'a'.
 
 integer i,j,k,l,ndim,nd,nf,ns,ptype
@@ -212,7 +212,16 @@ if(fname(j:j)==' ' .or. fname(j:j)=='') cycle
 k=k+1
 string(k:k)=fname(j:j)
 end do
-fname=string
+
+i=index(fname,'exp(-')
+if(i>0) then
+  fname(:i+3)=string(:i+3)
+  fname(i+4:i+4)='0'
+  fname(i+5:)=string(i+4:)
+else
+  fname=string
+end if
+
 end subroutine
 
 subroutine string_split(instr,outstr,sp)

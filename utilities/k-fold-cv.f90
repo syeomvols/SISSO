@@ -1,5 +1,5 @@
 program kfoldcv
-! creating train.dat and SISSO.in for k-fold cross validation 
+! creating the train.dat and SISSO.in for the subsets of samples for  k-fold cross validation 
 ! applicable to both classification and regression
 
 integer i,j,k,l,iii,kfold,ptype,ngroup

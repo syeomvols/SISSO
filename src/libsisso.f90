@@ -21,6 +21,7 @@ module libsisso
 ! worth_de: observation weighted orth_de
 ! lls: linear least fitting by conventional method (not robust)
 ! coord_descent: coordinate descent
+! sc_coord_descent: sign-constraint coordinate descent
 ! crosspro: crossproduct between two vectors
 ! LASSO: least absolute shrinkage and selection operator
 ! mtlasso_mpi Multi-task LASSO
@@ -43,7 +44,7 @@ contains
 
 function dispp(p,a,b,c)
 ! Distance of a point from a plane
-! input: a,b,c are the three points determing the plane, p is the point outside of the plane.
+! input: a,b,c are the three points determing the plane, p is the point outside the plane.
 ! output: the distance
 
 real*8 dispp,a(3),b(3),c(3),p(3),normal(3)
@@ -78,8 +79,8 @@ end function
 
 
 function intriangle(p,a,b,c)
-! p,a,b,c are in the same plane
 ! check if point p is inside the triangle formed by points a,b,c
+! p,a,b,c are in the same plane
 real*8 a(3),b(3),c(3),p(3),v1(3),v2(3),normal_0(3),normal_1(3),normal_2(3),normal_3(3)
 logical intriangle
 intriangle=.false.
@@ -101,8 +102,8 @@ end function
 
 subroutine string_split(instr,outstr,sp)
 ! break a string into sub-strings
-! input: instr, input string; sp, separator
-! output: outstr, output sub-strings
+! input: instr, string; sp, separator
+! output: outstr, sub-strings
 character(len=*) instr,outstr(:),sp
 integer n
 logical isend
@@ -198,8 +199,7 @@ end function
 
 function inverse(mat)
 ! calculate the inverse of a given matrix
-! input: the matrix
-! output: the inversed matrix
+! input: the matrix mat
 
 real*8  mat(:,:),um(ubound(mat,1),ubound(mat,1)),lm(ubound(mat,1),ubound(mat,1))
 real*8  x(ubound(mat,1),ubound(mat,1)),y(ubound(mat,1),ubound(mat,1)),inverse(ubound(mat,1),ubound(mat,1))
@@ -211,7 +211,7 @@ if (abs(det(mat))==0) stop 'Error: value of the determinant is 0, the matrix is 
 if (abs(det(mat))<1d-30) write(*,'(a,E15.6E3,a)') 'Warning: value of the determinant is:',&
 det(mat),' matrix might be singular'
 
-!!!!!! construct up triangle matrix
+! construct up triangle matrix
 do i=1,n
 do j=i+1,n
 um(j,:)=um(j,:)-um(j,i)/um(i,i)*um(i,:)
@@ -470,9 +470,9 @@ beta_old=beta_init
 beta=beta_init
 xxbeta=matmul(prod_xtx,beta)
 
-!-----------------------------------
-! entering the main updation cycles
-!-----------------------------------
+!-------------------------
+! entering the main loop
+!-------------------------
 
 do i=1,max_iter
 
@@ -580,9 +580,9 @@ end if
 call mpi_barrier(mpi_comm_world,mpierr)
 call mpi_bcast(xxbeta,ntotf*ntask,mpi_double_precision,0,mpi_comm_world,mpierr)
 
-!-----------------------------------
-! entering the main updation cycles
-!-----------------------------------
+!------------------------
+! entering the main loop
+!------------------------
 do i=1,max_iter
 
    if(i==1) then
@@ -684,28 +684,168 @@ run_iter=i
 
 end subroutine
 
+subroutine sc_coord_descent(x,y,max_iter,tole,dd,intercept,beta,rmse)
+! sign-constrained coordinate descent method to solve y=a+x*b
+! input: matrix x,vector y,max iteration:  max_iter,tolerance: tole, dimension: dd
+! output: intercept,beta,rmse
 
-subroutine coord_descent(x,y,max_iter,tole,beta,rmse)
-! using coordinate descent method to solve the linear equation y=xb
-! input: x(m,n),y(m),max_iter,tole; output beta(n),rmse
-! x and y are already standardized, and y=xb
-! output: rmse,beta
 implicit none
-real*8 x(:,:),y(ubound(x,1)),beta(ubound(x,2)),beta_old(ubound(x,2)),&
-prod_xty(ubound(x,2)),prod_xtx(ubound(x,2),ubound(x,2)),rmse,tole,norm_beta
-integer m,n,i,j,k,max_iter
+integer m,n,i,j,k,max_iter,dd
+real*8 x(:,:),y(ubound(x,1)),beta(ubound(x,2),2**dd),beta_old(ubound(x,2),2**dd),xprime(ubound(x,1),ubound(x,2)),&
+xdprime(ubound(x,1),ubound(x,2)),yprime(ubound(y,1)),intercept(2**dd),rmse(2**dd),tole,norm_beta,&
+prod_xty(ubound(x,2)),prod_xtx(ubound(x,2),ubound(x,2)),xpnorm(ubound(x,2)),ymean,xmean(ubound(x,2))
+integer csign(ubound(x,2),2**dd)
 
 m=ubound(x,1)
 n=ubound(x,2)
 
+! enumerate all coefficients signs
+csign=1
+do i=n,1,-1
+  if(i==n) then
+    csign(i,2)=-1
+  else
+    csign(i,2**(n-i)+1:2**(n-i+1))=-1
+    csign((i+1):n,2**(n-i)+1:2**(n-i+1))=csign((i+1):n,1:2**(n-i))
+  end if
+end do
+
+! yprime= y-ymean
+! xprime=x-xmean
+! xdprime=xprime/xpnorm
+! intercept=ymean-sum(xmean*beta)
+! argmin||y-x*beta-intercept|| -> argmin||yprime-xprime*beta||
+! beta=beta/xpnorm
+
+do i=1,n
+ xmean(i)=sum(x(:,i))/m
+ xprime(:,i)=x(:,i)-xmean(i)
+ xpnorm(i)=sqrt(sum((xprime(:,i))**2))
+ xdprime(:,i)=xprime(:,i)/xpnorm(i)
+end do
+ymean=sum(y)/m
+yprime=y-ymean
+
+
 beta_old=0.0
 beta=0.0
 
-! definition to make fast
-prod_xty=matmul(transpose(x),y)
-prod_xtx=matmul(transpose(x),x)
+prod_xty=matmul(transpose(xdprime),yprime)
+prod_xtx=matmul(transpose(xdprime),xdprime)
 
-! entering the main updation cycles
+do k=1,2**dd  ! all possibility of coefficients signs
+  do i=1,max_iter
+   do j=1,n
+         beta(j,k)=prod_xty(j)-sum(prod_xtx(j,:)*beta(:,k))+beta(j,k)
+         if(beta(j,k)*csign(j,k)<0.d0) beta(j,k)=0.d0   ! sign-constrained
+   end do
+     norm_beta=sqrt(sum((beta(:,k))**2))
+    if(norm_beta==0 .or. (sqrt(sum((beta(:,k)-beta_old(:,k))**2))/norm_beta)<tole .or. i==max_iter) then
+      exit
+    else
+      beta_old(:,k)=beta(:,k)
+    end if
+  end do
+  rmse(k)=sqrt(sum((yprime-matmul(xdprime,beta(:,k)))**2)/m)
+  beta(:,k)=beta(:,k)/xpnorm
+  intercept(k)=ymean-sum(xmean*beta(:,k))
+end do
+
+end subroutine
+
+
+subroutine sc_coord_descent_nointercept(x,y,max_iter,tole,dd,beta,rmse)
+! sign-constrained coordinate descent method to solve y=x*b
+! input: matrix x,vector y,max iteration:  max_iter,tolerance: tole, dimension: dd
+! output: beta,rmse
+
+implicit none
+integer m,n,i,j,k,max_iter,dd
+real*8 x(:,:),y(ubound(x,1)),beta(ubound(x,2),2**dd),beta_old(ubound(x,2),2**dd),xprime(ubound(x,1),ubound(x,2)),&
+rmse(2**dd),tole,norm_beta,prod_xty(ubound(x,2)),prod_xtx(ubound(x,2),ubound(x,2)),xnorm(ubound(x,2))
+integer csign(ubound(x,2),2**dd)
+
+m=ubound(x,1)
+n=ubound(x,2)
+
+! enumerate all coefficients signs
+csign=1
+do i=n,1,-1
+  if(i==n) then
+    csign(i,2)=-1
+  else
+    csign(i,2**(n-i)+1:2**(n-i+1))=-1
+    csign((i+1):n,2**(n-i)+1:2**(n-i+1))=csign((i+1):n,1:2**(n-i))
+  end if
+end do
+
+do i=1,n
+ xnorm(i)=sqrt(sum((x(:,i))**2))
+ xprime(:,i)=x(:,i)/xnorm(i)
+end do
+
+
+beta_old=0.0
+beta=0.0
+
+prod_xty=matmul(transpose(xprime),y)
+prod_xtx=matmul(transpose(xprime),xprime)
+
+do k=1,2**dd  ! all possibility of coefficients signs
+  do i=1,max_iter
+   do j=1,n
+         beta(j,k)=prod_xty(j)-sum(prod_xtx(j,:)*beta(:,k))+beta(j,k)
+         if(beta(j,k)*csign(j,k)<0.d0) beta(j,k)=0.d0   ! sign-constrained
+   end do
+     norm_beta=sqrt(sum((beta(:,k))**2))
+    if(norm_beta==0 .or.(sqrt(sum((beta(:,k)-beta_old(:,k))**2))/norm_beta)<tole .or. i==max_iter) then
+      exit
+    else
+      beta_old(:,k)=beta(:,k)
+    end if
+  end do
+  rmse(k)=sqrt(sum((y-matmul(xprime,beta(:,k)))**2)/m)
+  beta(:,k)=beta(:,k)/xnorm
+end do
+
+end subroutine
+
+
+subroutine coord_descent(x,y,max_iter,tole,intercept,beta,rmse) 
+! coordinate descent method to solve y=a+x*b 
+! input: matrix x,vector y, integer max_iter, real tole
+! output: intercept,beta,rmse
+
+implicit none
+real*8 x(:,:),y(ubound(x,1)),beta(ubound(x,2)),beta_old(ubound(x,2)),xprime(ubound(x,1),ubound(x,2)),&
+xdprime(ubound(x,1),ubound(x,2)),yprime(ubound(y,1)),intercept,rmse,tole,norm_beta,prod_xty(ubound(x,2)),&
+prod_xtx(ubound(x,2),ubound(x,2)),xpnorm(ubound(x,2)),ymean,xmean(ubound(x,2))
+integer m,n,i,j,k,max_iter
+
+! yprime= y-ymean
+! xprime=x-xmean
+! xdprime=xprime/xpnorm
+! intercept=ymean-sum(xmean*beta)
+! argmin||y-x*beta-intercept|| -> argmin||yprime-xprime*beta||
+! beta=beta/xpnorm
+
+m=ubound(x,1)
+n=ubound(x,2)
+do i=1,n
+ xmean(i)=sum(x(:,i))/m
+ xprime(:,i)=x(:,i)-xmean(i)
+ xpnorm(i)=sqrt(sum((xprime(:,i))**2))
+ xdprime(:,i)=xprime(:,i)/xpnorm(i)
+end do
+ymean=sum(y)/m
+yprime=y-ymean
+
+beta_old=0.0
+beta=0.0
+
+prod_xty=matmul(transpose(xdprime),yprime)
+prod_xtx=matmul(transpose(xdprime),xdprime)
+
 do i=1,max_iter
  do j=1,n
        beta(j)=prod_xty(j)-sum(prod_xtx(j,:)*beta)+beta(j)
@@ -718,9 +858,12 @@ do i=1,max_iter
   end if
 end do
 
-rmse=sqrt(sum((y-matmul(x,beta))**2)/m)
+rmse=sqrt(sum((yprime-matmul(xdprime,beta))**2)/m)
+beta=beta/xpnorm
+intercept=ymean-sum(xmean*beta)
 
 end subroutine
+
 
 subroutine kfoldCV(x,y,random,fold,noise,CVrmse,CVmax)
 ! k-fold cross validation

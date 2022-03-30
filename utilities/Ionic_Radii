@@ -1203,12 +1203,11 @@ Pm2+_10     1.3592    Ouyang
 
 
 Shannon:
-1. Shannon's effective radii: Acta Cryst. (1976). A32, 751
+1. Shannon's effective radii (high-spin data): Acta Cryst. (1976). A32, 751
    (http://abulafia.mt.ic.ac.uk/shannon/radius.php?orderby=Ion&dir=1)
 
 Ouyang:
 R. Ouyang, Chem. Mater. 32, 595 (2020).
+(XXnn_mm: element,charge,coordination number)
 
-Note:
-1. high-spin data are used in Shannon's table
-2. XXnn_mm: element,charge,coordination number
+
