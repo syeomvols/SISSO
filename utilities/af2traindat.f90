@@ -1,6 +1,6 @@
 program af2traindat
 ! Creating train.dat with file atom_features (list of atomic features) and
-! samplelist (list of samples)
+! the file samplelist (list of the training samples)
 
 real*8,allocatable:: feat(:,:)
 character line*1000,atomline*1000,strings(500)*50,letter(14)*2

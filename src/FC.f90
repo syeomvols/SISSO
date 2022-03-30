@@ -17,19 +17,14 @@ module FC
 
 use var_global
 use libsisso
-! module-level variables:
-integer*8 nselect,ntot,nthis,nreject,nvf_new
-real*8,allocatable:: trainy(:),trainy_c(:),fout(:,:),dim_out(:,:),vfeat(:,:,:),f_select(:,:),&
-                     ftag_select(:),score_select(:,:),tag(:)
+! variables for this module
+integer*8 ntot,nthis,nreject,nvf_new,nfinal_select,nbasic_select,nextra_select,nselect,icomb
+real*8,allocatable:: trainy(:),trainy_c(:),fout(:,:),dim_out(:,:),vfeat(:,:,:),f_select(:,:),score_select(:,:),tag(:)
 character(len=lname),allocatable::  name_out(:),lastop_out(:)*10,name_select(:),reject(:)
-integer*8,allocatable:: complexity_out(:),mpin(:),mpin2(:)
-logical sis_on,foutsave
-integer icomb
+integer*8,allocatable:: complexity_out(:),mpin(:),mpin2(:),complexity_select(:),usedup_warning(:)
+logical threshold_select,foutsave
 
 contains
-
-
-
 
 
 subroutine feature_construction
@@ -39,42 +34,34 @@ logical   lreject
 character line*500,phiname*5,rejectname*100
 real*8    tmp,bbb,tmp_score(2)
 integer*8 aaa,i,j,k,l,ll,mm1,mm2,nf(maxcomb),mpii,mpij,mpik
-real*8,allocatable:: ftag(:),SD(:),sisfeat(:,:),feat_in1(:,:),feat_in2(:,:),dim_in1(:,:),dim_in2(:,:)
-integer*8,allocatable:: nfpcore_this(:),nfpcore_tot(:),order(:),nvfpcore(:),complexity_in1(:),complexity_in2(:)
-character(len=lname),allocatable:: name_sisfeat(:),name_in1(:),name_in2(:),lastop_in1(:)*10,lastop_in2(:)*10
+real*8,allocatable:: ftag(:,:),SD(:),sisfeat(:,:),feat_in1(:,:),dim_in1(:,:)
+integer*8,allocatable:: nfpcore_this(:),nfpcore_tot(:),order(:),nvfpcore(:),complexity_in1(:)
+character(len=lname),allocatable:: name_sisfeat(:),name_in1(:),lastop_in1(:)*10
 logical,allocatable:: available(:)
 
 ! Stop if the whole feature space had been selected.
 IF (iFCDI>1 .and. nsis(iFCDI-1)<subs_sis(iFCDI-1)) THEN
    if(mpirank==0) then
-      write(*,'(a)') 'WARNING: all features had been selected at previous iterations!'
-      write(*,'(a,i10)') 'Size of the SIS-selected subspace from this iteration:',nsis(iFCDI)
-      write(9,'(a,i10)') 'Size of the SIS-selected subspace from this iteration:',nsis(iFCDI)
+      write(*,'(a)') 'Warning: Last selected subspace < subs_sis! No more FC will be performed.' 
+      write(9,'(a)') 'Wrning: Last selected subspace < subs_sis! No more FC will be performed.'
    end if
    return
 end if
 
-
-! time for FC
+! running time for FC
 if(mpirank==0) stime_FC=mpi_wtime()
 
 !------------------------------------------------------
 ! array allocation
 !------------------------------------------------------
-allocate(trainy(sum(nsample)))
-allocate(trainy_c(sum(nsample)))
+allocate(trainy(npoints))
+allocate(trainy_c(npoints))
 i=max(1000,nsf+nvf)
 allocate(feat_in1(sum(nsample),i))   
 allocate(name_in1(i))
 allocate(lastop_in1(i))
 allocate(dim_in1(ndimtype,i))
 allocate(complexity_in1(i))
-
-!allocate(feat_in2(sum(nsample),2*i))  
-!allocate(name_in2(2*i))
-!allocate(lastop_in2(2*i))
-!allocate(dim_in2(ndimtype,2*i))
-!allocate(complexity_in2(2*i))
 
 allocate(fout(sum(nsample),i))
 allocate(name_out(i))
@@ -83,11 +70,27 @@ allocate(complexity_out(i))
 allocate(dim_out(ndimtype,i))
 if(nvf>0) allocate(vfeat(sum(nsample),vfsize,i))
 
-j=2*subs_sis(iFCDI)
-allocate(f_select(sum(nsample),j))
-allocate(ftag_select(j))
+if(ffdecorr) then
+  if(mpisize>1) then
+     nbasic_select=ceiling(decorr_alpha*subs_sis(iFCDI))
+  else if(mpisize==1) then
+     nbasic_select=2*ceiling(decorr_alpha*subs_sis(iFCDI))
+  end if
+else
+  if(mpisize>1) then
+     nbasic_select=subs_sis(iFCDI)
+  else if(mpisize==1) then
+     nbasic_select=2*subs_sis(iFCDI)
+  end if
+end if
+
+nextra_select=min(subs_sis(iFCDI),50000)
+j=nbasic_select+nextra_select
+
+allocate(f_select(npoints,j))
 allocate(score_select(j,2))
 allocate(name_select(j))
+allocate(complexity_select(j))
 
 allocate(mpin(mpisize))
 allocate(mpin2(mpisize))
@@ -96,47 +99,43 @@ allocate(nfpcore_tot(mpisize))
 allocate(SD(ntask))
 allocate(nvfpcore(mpisize))
 allocate(tag(sum(nsample))) 
-!------------------------------
+allocate(usedup_warning(mpisize))
 
 ! initialization
 !------------------
 dim_in1(:,:nsf+nvf)=pfdim
-sis_on=.false.
+threshold_select=.false.
 nvf_new=nvf
 feat_in1(:,1:nsf)=psfeat(:,1:nsf)
 name_in1(:nsf+nvf)=pfname(:nsf+nvf)
-!if(trim(adjustl(calc))=='FCDI') then
-  trainy=res
-!else
-!  trainy=prop_y
-!end if
+trainy=res
 
-if(nvf>0) then
-  vfeat(:,:,:nvf)=pvfeat(:,:,:nvf)
-  do i=1,nvf   ! linking vectors features
-    feat_in1(1,nsf+i)=i    ! vf ID to the 1st element
-    feat_in1(2,nsf+i)=abs(sum(tag*sum(vfeat(:,:,i),2)))/ntask ! vf tag to the 2nd element
-  end do
-end if
-
-! create a tag to make every feature unique
+! A vector to asist redundant check
 do j=1,ntask
 do i=1,nsample(j)    
   tag(sum(nsample(:j-1))+i)=1.0d0+0.001d0*i
 end do
 end do
 
+if(nvf>0) then  ! there are vectors features
+  vfeat(:,:,:nvf)=pvfeat(:,:,:nvf)
+  do i=1,nvf  
+    feat_in1(1,nsf+i)=i    ! vf ID to the 1st element
+    feat_in1(2,nsf+i)=sqrt(sum((tag+sum(vfeat(:,:,i),2))**2))  ! norm of the new vector
+  end do
+end if
+
 ! avoid repetition of features from a existing space
 inquire(file='feature_space/reject.name',exist=lreject)
 if(lreject) then
    rejectname='feature_space/reject.name'
    if(mpirank==0) write(9,'(2a)') 'File containing the features to be rejected: ',trim(rejectname)
-else!if( trim(adjustl(calc))=='FCDI') then
-  inquire(file='feature_space/Uspace.name',exist=lreject)
-  if(lreject) then
-   rejectname='feature_space/Uspace.name'
-   if(mpirank==0) write(9,'(2a)') 'File containing the features to be rejected: ',trim(rejectname)
-  end if
+else
+ if(iFCDI>1) inquire(file='feature_space/Uspace.name',exist=lreject)
+ if(lreject) then
+  rejectname='feature_space/Uspace.name'
+!   if(mpirank==0) write(9,'(2a)') 'File containing the features to be rejected: ',trim(rejectname)
+ end if
 end if
 
 nreject=0
@@ -178,43 +177,49 @@ if(mpirank/=0 .and. nreject>0) allocate(reject(nreject))
 if(nreject>0) call mpi_bcast(reject,INT(nreject*lname),mpi_character,0,mpi_comm_world,mpierr)
 
 
-!--------------------------
-! Standard Deviation
-!--------------------------
+!------------------------------------------------------------
+! Population Standard Deviation
+! For rough guess of fitting quality by comparing with RMSE
+!------------------------------------------------------------
 2000 format(a,i3.3,a,*(f10.5))
 
-do j=1,ntask
- mm1=sum(nsample(:j-1))+1
- mm2=sum(nsample(:j))
- trainy_c(mm1:mm2)=trainy(mm1:mm2)-sum(trainy(mm1:mm2))/(mm2-mm1+1)
- SD(j)=sqrt(sum((trainy_c(mm1:mm2))**2)/(mm2-mm1+1))  ! standard deviation
-! if(mpirank==0 .and. ptype==1 .and. &
-!    (trim(adjustl(calc))=='FC' .or. (trim(adjustl(calc))=='FCDI' .and. iFCDI==1)) )&
- if(mpirank==0 .and. ptype==1 .and. iFCDI==1) &
-     write(9,2000) 'Standard Deviation (SD) of property ',j,': ',SD(j)
-end do
+if(nreaction==0) then
+   do j=1,ntask
+    mm1=sum(nsample(:j-1))+1
+    mm2=sum(nsample(:j))
+    trainy_c(mm1:mm2)=trainy(mm1:mm2)-sum(trainy(mm1:mm2))/(mm2-mm1+1)  ! centered
+    SD(j)=sqrt(sum((trainy_c(mm1:mm2))**2)/(mm2-mm1+1))  ! population standard deviation
+    if(mpirank==0 .and. ptype==1 .and. iFCDI==1) &
+        write(9,2000) 'Population Standard Deviation (SD) of task ',j,': ',SD(j)
+   end do
+elseif(nreaction>0) then
+    trainy_c(1:nreaction)=trainy(1:nreaction)-sum(trainy(1:nreaction))/nreaction  ! centered
+    SD(j)=sqrt(sum((trainy_c(1:nreaction))**2)/nreaction)  ! population standard deviation
+    if(mpirank==0 .and. ptype==1 .and. iFCDI==1) &
+        write(9,2000) 'Population Standard Deviation (SD) of task ',j,': ',SD(j)
+end if
 
-!---------------------------------------------------
+!-------------------------------------------------------------------------
 ! feature combinations start ...
 ! \PHI0 is the initial primary feature space
 !-------------------------------------------------------------------------
 nselect=0 ! # of selected features
 nf=0      ! # generated features from each combination
-foutsave=.true.   ! save features for this combination or not ?
+foutsave=.true.   ! save the generated features for this combination ?
 nvf_old=nvf_new   ! update # vfeat
 lastop_in1=''     ! the last operation of the generated feature
 complexity_in1=0
 
 i=nsf+nvf ! total number of primary features
 j=0
-!if(mpirank==0) &  ! evaluating primary features
+
+! no combination, but to check if primary features are good to be included in the 'selected' set.
 call combine(feat_in1(:,1:i),name_in1(1:i),lastop_in1(1:i),complexity_in1(1:i),dim_in1(:,1:i),&  
              feat_in1(:,1:i),name_in1(1:i),lastop_in1(1:i),complexity_in1(1:i),dim_in1(:,1:i),'NO',j) 
 
-nvf_new=nvf_old  ! no combination
+nvf_new=nvf_old  
 ntot=nsf+nvf_new
 nthis=ntot
-
 write(phiname,'(a,i2.2)') 'phi',0
 if(mpirank==0)  call writeout(phiname,nselect,nvf_new,ntot)
 
@@ -244,7 +249,7 @@ do icomb=1,rung
     end if
 
     nvf_old=nvf_new
-    !------------------------------------------------------------------------------------------
+
     !allocating jobs for each core
     ! divide the combination into n parts with equal load
     ! X1, X2, ..., Xi, ...
@@ -279,7 +284,7 @@ do icomb=1,rung
          mpin2(j)=mpij
       end do
 
-     ! check the space
+     ! check if need more memory 
       i=ntot-nthis+(nthis-mpin2(mpirank+1)+1)
       if(ubound(feat_in1,2)< i)  call addm_in1(i-ubound(feat_in1,2),feat_in1,name_in1,lastop_in1,complexity_in1,dim_in1)
 
@@ -345,18 +350,18 @@ do icomb=1,rung
        end if
        call mpi_bcast(nfpcore_this,mpisize,mpi_integer8,0,mpi_comm_world,mpierr)
 
-       ! create tags for the new features
-       allocate(ftag(nf(icomb)))
+       ! create identity for the new features
+       allocate(ftag(nf(icomb),2)) 
        do i=1,nf(icomb)
          if( isscalar(name_out(i)) ) then
-          ftag(i)=sum(tag*fout(:,i))/ntask
+          ftag(i,1)=sqrt(sum((tag+fout(:,i))**2))
          else
-          ftag(i)=fout(2,i)/ntask
+          ftag(i,1)=fout(2,i)
          end if
        end do
 
        ! create the "available" to store the repetition information.
-       ! available(i)=.false.: repetition
+       ! available(i)=.false.: duplicate
         allocate(available(nf(icomb)))
         available=.true.
        ! create the "order" to store the ordering information for bisection method.
@@ -368,10 +373,12 @@ do icomb=1,rung
             write(*,'(a,i15)') 'Number of newly generated features: ',sum(nfpcore_this) 
             write(*,'(a)') 'Redundant check on the newly generated features ...'
        end if
-       call dup_scheck(nfpcore_this(mpirank+1),ftag,name_out,order,available)
+       ! serial duplication check
+       call dup_scheck(nfpcore_this(mpirank+1),ftag,name_out,complexity_out,order,available,'all')
 
+       ! parallel duplication check
        ! redundant check between cores,output available
-       if(mpisize>1) call dup_pcheck(nfpcore_this,ftag,name_out,order,available)
+       if(mpisize>1) call dup_pcheck(nfpcore_this,ftag,name_out,complexity_out,order,available,'all')
        !-----------------------------------------------------------------------------------------
 
        ! renew the nvf_new and nvfpcore on each core
@@ -397,7 +404,7 @@ do icomb=1,rung
        call mpi_bcast(nvfpcore,mpisize,mpi_integer8,0,mpi_comm_world,mpierr)
 
        !---------------------------
-       ! remove redundant features
+       ! remove duplicate features
        !---------------------------
        j=0
        if(mpirank==0) then
@@ -413,7 +420,7 @@ do icomb=1,rung
              lastop_out(j)=lastop_out(i)
              complexity_out(j)=complexity_out(i)
              dim_out(:,j)=dim_out(:,i)
-             ftag(j)=ftag(i)
+             ftag(j,1)=ftag(i,1)
              if(nvf>0) then
              if( .not. isscalar(name_out(j)) ) then
                nvf_new=nvf_new+1
@@ -543,17 +550,11 @@ deallocate(lastop_in1)
 deallocate(complexity_in1)
 deallocate(dim_in1)
 
-!deallocate(feat_in2)
-!deallocate(name_in2)
-!deallocate(lastop_in2)
-!deallocate(complexity_in2)
-!deallocate(dim_in2)
-
 if(nvf>0) deallocate(vfeat)
 
-!------------------------------------------------------
-!  collect all the selected features
-!------------------------------------------------------
+!---------------------------------------------------------------
+!  collect the information of selected features from all cores
+!---------------------------------------------------------------
 
 if(rung==0) then
  nfpcore_this=nselect
@@ -580,46 +581,43 @@ end if
 call mpi_bcast(nfpcore_this,mpisize,mpi_integer8,0,mpi_comm_world,mpierr)
 call mpi_barrier(mpi_comm_world,mpierr)
 !-----------------------------------------------------------------------------
+! saved information for selected features on each core ->
+! nselect: number of features selected on each core
+! f_select: selected features data on each core
+! complexity_select: complexity of the selected features on each core
+! name_select: name of the selected features on each core
+! score_select: score of the selected features on each core
 
-! --------------------------------------
 ! redundant check for selected features
 !---------------------------------------
 allocate(available(nfpcore_this(mpirank+1)))
 available=.true.
 allocate(order(nfpcore_this(mpirank+1)+1))
 
-call dup_scheck(nfpcore_this(mpirank+1),ftag_select,name_select,order,available)
-if(mpisize>1) call dup_pcheck(nfpcore_this,ftag_select,name_select,order,available)
+! serial check
+call dup_scheck(nfpcore_this(mpirank+1),score_select,name_select,complexity_select,order,available,'selected')
+
+! parallel redundant check
+if(mpisize>1) call dup_pcheck(nfpcore_this,score_select,name_select,complexity_select,order,available,'selected')
 
 !---------------------------------------
 ! sure independence screening
 !---------------------------------------
 if(mpirank==0) then
-    allocate(sisfeat(sum(nsample),subs_sis(iFCDI)))
+    allocate(sisfeat(npoints,subs_sis(iFCDI)))
     allocate(name_sisfeat(subs_sis(iFCDI)))
 end if
 
-call iter_sis_p(nfpcore_this,available,ftag_select,name_select,f_select,sisfeat,name_sisfeat)
+call sure_indep_screening(nfpcore_this,available,complexity_select,name_select,f_select,sisfeat,name_sisfeat)
 
 !--------------------------------------
 !--------------------------------------
-! output of the final feature space
+! output of the selected feature space
 !--------------------------------------
 !--------------------------------------
 if(mpirank==0) then
-
-!   write(9,'(a,"   ",a)') 'The best feature by SIS is: ',trim(name_sisfeat(1))
-!   if (trim(adjustl(calc))/='FCDI') then
-!       call system('rm -rf space')
-!       call system('mkdir feature_space')
-!   end if
-
    ! output space.name
-!   if(trim(adjustl(calc))=='FC') then
-!      write(line,'(a)') 'space.name'
-!   else if(trim(adjustl(calc))=='FCDI') then
-      write(line,'(a,i3.3,a)') 'space_',iFCDI,'d.name'
-!   end if
+   write(line,'(a,i3.3,a)') 'space_',iFCDI,'d.name'
    open(funit,file='feature_space/'//trim(adjustl(line)),status='replace')
    if(ptype==1) then
       do i=1,nsis(iFCDI)
@@ -645,42 +643,47 @@ if(mpirank==0) then
    close(funit)
 
    ! output space data
-   do j=1,ntask
-      mm1=sum(nsample(:j-1))+1
-      mm2=sum(nsample(:j))
-!      if(trim(adjustl(calc))=='FCDI') then
-        write(line,'(a,i3.3,a,i3.3,a)') 'space_',iFCDI,'d_p',j,'.dat'
-!      else
-!        write(line,'(a,i3.3,a)') 'space_p',j,'.dat'
-!      end if
-      open(funit,file='feature_space/'//trim(adjustl(line)),status='replace')
-
-      if(ptype==1) then
 2001  format(*(e20.10))
-        do ll=mm1,mm2
+   if(nreaction==0) then
+     do j=1,ntask
+        mm1=sum(nsample(:j-1))+1
+        mm2=sum(nsample(:j))
+        write(line,'(a,i3.3,a,i3.3,a)') 'space_',iFCDI,'d_p',j,'.dat'
+        open(funit,file='feature_space/'//trim(adjustl(line)),status='replace')
+        if(ptype==1) then
+          do ll=mm1,mm2
+            write(funit,2001) trainy(ll),sisfeat(ll,:nsis(iFCDI))
+          end do
+        else
+          do ll=mm1,mm2
+            write(funit,2001) sisfeat(ll,:nsis(iFCDI))  ! no y value for categorical properties
+          end do
+        end if
+        close(funit)
+     end do
+   elseif(nreaction>0) then
+        write(line,'(a,i3.3,a,i3.3,a)') 'space_',iFCDI,'d_p',1,'.dat'
+        open(funit,file='feature_space/'//trim(adjustl(line)),status='replace')
+        do ll=1,nreaction
           write(funit,2001) trainy(ll),sisfeat(ll,:nsis(iFCDI))
         end do
-      else
-        do ll=mm1,mm2
-          write(funit,2001) sisfeat(ll,:nsis(iFCDI))  ! no y value for categorical properties
-        end do
-      end if
-      close(funit)
-   end do
+        close(funit)
+   end if
 
    write(*,'(3a,i10)') 'Size of the SIS-selected subspace from ',phiname,': ',nsis(iFCDI)
    if(nsis(iFCDI)<subs_sis(iFCDI)) then
-   write(*,'(a)') 'WARNING: the actual size of the selected subspace is smaller than that specified in "SISSO.in" !!!'
+   write(*,'(a)') 'Warning: The selected subspace is smaller than subs_sis (SISSO.in) !!!'
    end if
    write(9,'(3a,i10)') 'Size of the SIS-selected subspace from ',phiname,': ',nsis(iFCDI)
+   if(any(usedup_warning>0) .and. ffdecorr ) &
+     write(9,'(/a,i5,a/)') 'Warning: local subspaces used up by SIS. Please increase decorr_alpha and rerun SISSO'
 end if  
-
 
 ! release all the spaces
 deallocate(trainy)
 deallocate(trainy_c)
 deallocate(f_select)
-deallocate(ftag_select)
+deallocate(complexity_select)
 deallocate(score_select)
 deallocate(name_select)
 deallocate(mpin)
@@ -690,9 +693,11 @@ deallocate(nfpcore_tot)
 deallocate(available)
 deallocate(order)
 deallocate(SD)
+deallocate(usedup_warning)
+
 if(mpirank==0) then
-deallocate(sisfeat)
-deallocate(name_sisfeat)
+  deallocate(sisfeat)
+  deallocate(name_sisfeat)
 end if
 deallocate(tag)
 deallocate(nvfpcore)
@@ -701,18 +706,18 @@ if(lreject) deallocate(reject)
 call mpi_barrier(mpi_comm_world,mpierr)
 if(mpirank==0) then
    etime_FC=mpi_wtime()
-   write(9,'(a,f15.2)') 'Wall-clock time (second) for this FC: ',etime_FC-stime_FC
+   write(9,'(a,f15.2)') 'Time (second) used for this FC: ',etime_FC-stime_FC
 end if
 
 end subroutine
 
 
-subroutine combine(fin1,name_in1,lastop_in1,comp_in1,dim_in1,fin2,name_in2,lastop_in2,comp_in2,dim_in2,op,nf) 
+subroutine combine(fin1,name_in1,lastop_in1,compl_in1,dim_in1,fin2,name_in2,lastop_in2,compl_in2,dim_in2,op,nf) 
 implicit none
-real   progress
+real progress
 real*8 fin1(:,:),fin2(:,:),tmp(ubound(fin1,1)),dim_in1(:,:),dim_in2(:,:),&
        dimtmp(ubound(dim_in1,1)),tmp_vf(ubound(fin1,1),vfsize)
-integer*8 nfin1,nfin2,i,j,k,kk,kkk,l,nf,comp_in1(:),comp_in2(:),comp_tmp,counter,total_comb
+integer*8 nfin1,nfin2,i,j,k,kk,kkk,l,nf,compl_in1(:),compl_in2(:),compl_tmp,counter,total_comb
 character(len=*) name_in1(:),name_in2(:),op,lastop_in1(:),lastop_in2(:)
 character(len=lname) name_tmp,lastop_tmp*10
 logical first,skip
@@ -729,15 +734,15 @@ do i=1,nfin1
 ! no operation
       IF(trim(adjustl(op))=='NO') THEN
           lastop_tmp=''
-          comp_tmp=comp_in1(i)
+          compl_tmp=compl_in1(i)
           name_tmp='('//trim(adjustl(name_in1(i)))//')'
           dimtmp=dim_in1(:,i)
         if( isscalar(name_in1(i)) ) then  
              tmp=fin1(:,i)
-             call isgoodf(tmp,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+             call isgoodf(tmp,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
         else
              tmp_vf=vfeat(:,:,nint(fin1(1,i)))
-             call isgoodvf(tmp_vf,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+             call isgoodvf(tmp_vf,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
         end if
         cycle
       END IF
@@ -745,8 +750,8 @@ do i=1,nfin1
 ! unary operators
 ! element-wise operation on vector features
       counter=counter+1
-      comp_tmp=comp_in1(i)+1
-      if(comp_tmp>maxcomplexity) goto 599
+      compl_tmp=compl_in1(i)+1
+      if(compl_tmp>fcomplexity) goto 599
 
       ! exp
       IF(index(op,'(exp)')/=0 ) then
@@ -756,10 +761,10 @@ do i=1,nfin1
         dimtmp=dimcomb(dim_in1(:,i),dim_in1(:,i),'(exp)')
         if( isscalar(name_in1(i)) ) then  ! vector feature or not
              tmp=exp(fin1(:,i))
-             call isgoodf(tmp,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+             call isgoodf(tmp,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
         else
              tmp_vf=exp(vfeat(:,:,nint(fin1(1,i))))
-             call isgoodvf(tmp_vf,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+             call isgoodvf(tmp_vf,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
         end if
       end if
       END IF
@@ -772,10 +777,10 @@ do i=1,nfin1
         dimtmp=dimcomb(dim_in1(:,i),dim_in1(:,i),'(exp-)')
         if( isscalar(name_in1(i)) ) then  ! vector feature or not
              tmp=exp(-fin1(:,i))
-             call isgoodf(tmp,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+             call isgoodf(tmp,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
         else
              tmp_vf=exp(-vfeat(:,:,nint(fin1(1,i))))
-             call isgoodvf(tmp_vf,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+             call isgoodvf(tmp_vf,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
         end if
       end if
       END IF
@@ -788,10 +793,10 @@ do i=1,nfin1
            dimtmp=dimcomb(dim_in1(:,i),dim_in1(:,i),'(^-1)')
            if( isscalar(name_in1(i)) ) then  ! vector feature or not
                 tmp=(fin1(:,i))**(-1)
-                call isgoodf(tmp,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+                call isgoodf(tmp,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
            else
                 tmp_vf=(vfeat(:,:,nint(fin1(1,i))))**(-1)
-                call isgoodvf(tmp_vf,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+                call isgoodvf(tmp_vf,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
            end if
         end if
        END IF
@@ -803,10 +808,10 @@ do i=1,nfin1
            dimtmp=dimcomb(dim_in1(:,i),dim_in1(:,i),'(scd)')
            if( isscalar(name_in1(i)) ) then  ! vector feature or not
                 tmp=1.0d0/(PI*(1.0d0+(fin1(:,i))**2))
-                call isgoodf(tmp,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+                call isgoodf(tmp,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
            else
                 tmp_vf=1.0d0/(PI*(1.0d0+(vfeat(:,:,nint(fin1(1,i))))**2))
-                call isgoodvf(tmp_vf,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+                call isgoodvf(tmp_vf,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
            end if
        END IF
 
@@ -818,10 +823,10 @@ do i=1,nfin1
            dimtmp=dimcomb(dim_in1(:,i),dim_in1(:,i),'(^2)')
            if( isscalar(name_in1(i)) ) then  ! vector feature or not
                 tmp=(fin1(:,i))**2
-                call isgoodf(tmp,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+                call isgoodf(tmp,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
            else
                 tmp_vf=(vfeat(:,:,nint(fin1(1,i))))**2
-                call isgoodvf(tmp_vf,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+                call isgoodvf(tmp_vf,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
            end if
         end if
        END IF
@@ -834,10 +839,10 @@ do i=1,nfin1
          dimtmp=dimcomb(dim_in1(:,i),dim_in1(:,i),'(^3)')
          if(  isscalar(name_in1(i)) ) then  ! vector feature or not
               tmp=(fin1(:,i))**3
-              call isgoodf(tmp,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+              call isgoodf(tmp,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
          else
               tmp_vf=(vfeat(:,:,nint(fin1(1,i))))**3
-              call isgoodvf(tmp_vf,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+              call isgoodvf(tmp_vf,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
          end if
        end if
      END IF
@@ -849,10 +854,10 @@ do i=1,nfin1
          dimtmp=dimcomb(dim_in1(:,i),dim_in1(:,i),'(^6)')
          if( isscalar(name_in1(i)) ) then  ! vector feature or not
               tmp=(fin1(:,i))**6
-              call isgoodf(tmp,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+              call isgoodf(tmp,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
          else
               tmp_vf=(vfeat(:,:,nint(fin1(1,i))))**6
-              call isgoodvf(tmp_vf,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+              call isgoodvf(tmp_vf,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
          end if
        END IF
 
@@ -864,14 +869,14 @@ do i=1,nfin1
               name_tmp='sqrt('//trim(adjustl(name_in1(i)))//')'
               dimtmp=dimcomb(dim_in1(:,i),dim_in1(:,i),'(sqrt)')
               tmp=sqrt(fin1(:,i))
-              call isgoodf(tmp,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+              call isgoodf(tmp,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
           else if ( .not. isscalar(name_in1(i)) )  then
               if(minval(vfeat(:,:,nint(fin1(1,i))))>0) then
               lastop_tmp='(sqrt)'
               name_tmp='sqrt('//trim(adjustl(name_in1(i)))//')'
               dimtmp=dimcomb(dim_in1(:,i),dim_in1(:,i),'(sqrt)')
               tmp_vf=sqrt(vfeat(:,:,nint(fin1(1,i))))
-              call isgoodvf(tmp_vf,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+              call isgoodvf(tmp_vf,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
               end if
           end if
          end if
@@ -885,13 +890,13 @@ do i=1,nfin1
               name_tmp='cbrt('//trim(adjustl(name_in1(i)))//')'
               dimtmp=dimcomb(dim_in1(:,i),dim_in1(:,i),'(cbrt)')
               tmp=(fin1(:,i))**(1.d0/3.d0)
-              call isgoodf(tmp,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+              call isgoodf(tmp,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
           else if ( .not. isscalar(name_in1(i)) )  then
               lastop_tmp='(cbrt)'
               name_tmp='cbrt('//trim(adjustl(name_in1(i)))//')'
               dimtmp=dimcomb(dim_in1(:,i),dim_in1(:,i),'(cbrt)')
               tmp_vf=(vfeat(:,:,nint(fin1(1,i))))**(1.d0/3.d0)
-              call isgoodvf(tmp_vf,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+              call isgoodvf(tmp_vf,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
           end if
          end if
        END IF
@@ -904,14 +909,14 @@ do i=1,nfin1
               name_tmp='log('//trim(adjustl(name_in1(i)))//')'
               dimtmp=dimcomb(dim_in1(:,i),dim_in1(:,i),'(log)')
               tmp=log(fin1(:,i))
-              call isgoodf(tmp,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+              call isgoodf(tmp,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
           else if ( .not. isscalar(name_in1(i)) )  then
               if(minval(vfeat(:,:,nint(fin1(1,i))))>0) then
               lastop_tmp='(log)'
               name_tmp='log('//trim(adjustl(name_in1(i)))//')'
               dimtmp=dimcomb(dim_in1(:,i),dim_in1(:,i),'(log)')
               tmp_vf=log(vfeat(:,:,nint(fin1(1,i))))
-              call isgoodvf(tmp_vf,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+              call isgoodvf(tmp_vf,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
               end if
           end if
          end if
@@ -924,10 +929,10 @@ do i=1,nfin1
          dimtmp=dimcomb(dim_in1(:,i),dim_in1(:,i),'(sin)')
          if(  isscalar(name_in1(i)) ) then  ! vector feature or not
               tmp=sin(fin1(:,i))
-              call isgoodf(tmp,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+              call isgoodf(tmp,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
          else
               tmp_vf=sin(vfeat(:,:,nint(fin1(1,i))))
-              call isgoodvf(tmp_vf,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+              call isgoodvf(tmp_vf,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
          end if
      END IF
 
@@ -938,10 +943,10 @@ do i=1,nfin1
          dimtmp=dimcomb(dim_in1(:,i),dim_in1(:,i),'(cos)')
          if(  isscalar(name_in1(i)) ) then  ! vector feature or not
               tmp=cos(fin1(:,i))
-              call isgoodf(tmp,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+              call isgoodf(tmp,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
          else
               tmp_vf=cos(vfeat(:,:,nint(fin1(1,i))))
-              call isgoodvf(tmp_vf,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+              call isgoodvf(tmp_vf,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
          end if
      END IF
 
@@ -954,10 +959,10 @@ do i=1,nfin1
       if( j-(ntot-nthis)>0 .and. j-(ntot-nthis)<=i ) cycle
 
       counter=counter+1
-      comp_tmp=comp_in1(i)+comp_in2(j)+1
-      if(comp_tmp>maxcomplexity) goto 602
+      compl_tmp=compl_in1(i)+compl_in2(j)+1
+      if(compl_tmp>fcomplexity) goto 602
 
-      if(better_name(name_in1(i),name_in2(j))==1) then
+      if(simpler(compl_in1(i),compl_in2(j),name_in1(i),name_in2(j))==1) then
          first=.true.
       else
          first=.false.
@@ -984,17 +989,18 @@ do i=1,nfin1
                    dimtmp=dimcomb(dim_in1(:,i),dim_in2(:,j),'(+)')  
                   if( isscalar(name_in1(i)) .and. isscalar(name_in2(j))  ) then 
                        tmp=fin1(:,i)+fin2(:,j)
-                       call isgoodf(tmp,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+                       call isgoodf(tmp,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
                   else 
+                   ! combination between a vector and a scalar feature
                    !  if(  .not. isscalar(name_in1(i))  .and. isscalar(name_in2(j))  )then 
                    !    tmp=sum(vfeat(:,:,nint(fin1(1,i))),2)+fin2(:,j)
-                   !    call isgoodf(tmp,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+                   !    call isgoodf(tmp,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
                    !  else if( isscalar(name_in1(i)) .and. (.not. isscalar(name_in2(j))) )then
                    !    tmp=fin1(:,i)+sum(vfeat(:,:,nint(fin2(1,j))),2)
-                   !    call isgoodf(tmp,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+                   !    call isgoodf(tmp,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
                      if (  (.not. isscalar(name_in1(i)))  .and. (.not. isscalar(name_in2(j))) ) then
                         tmp_vf=vfeat(:,:,nint(fin1(1,i)))+vfeat(:,:,nint(fin2(1,j)))
-                        call isgoodvf(tmp_vf,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+                        call isgoodvf(tmp_vf,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
                       end if
                   end if
                 END IF
@@ -1006,17 +1012,17 @@ do i=1,nfin1
                   if(index(op,'(+)')==0) dimtmp=dimcomb(dim_in1(:,i),dim_in2(:,j),'(-)')   
                   if( isscalar(name_in1(i)) .and. isscalar(name_in2(j))  ) then 
                        tmp=fin1(:,i)-fin2(:,j)
-                       call isgoodf(tmp,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+                       call isgoodf(tmp,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
                   else 
                      ! if( (.not. isscalar(name_in1(i)))  .and. isscalar(name_in2(j)) ) then
                      !     tmp=sum(vfeat(:,:,nint(fin1(1,i))),2)-fin2(:,j)
-                     !     call isgoodf(tmp,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+                     !     call isgoodf(tmp,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
                      ! else if( isscalar(name_in1(i)) .and. (.not. isscalar(name_in2(j))) )then
                      !     tmp=fin1(:,i)-sum(vfeat(:,:,nint(fin2(1,j))),2)
-                     !     call isgoodf(tmp,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+                     !     call isgoodf(tmp,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
                       if (  (.not. isscalar(name_in1(i)))  .and. (.not. isscalar(name_in2(j)))  ) then
                            tmp_vf=vfeat(:,:,nint(fin1(1,i)))-vfeat(:,:,nint(fin2(1,j)))
-                          call isgoodvf(tmp_vf,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+                          call isgoodvf(tmp_vf,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
                       end if
                    end if
 
@@ -1026,17 +1032,17 @@ do i=1,nfin1
                     ! dimtmp=dimcomb(dim_in1(:,i),dim_in2(:,j),'(-)')   ! same with above
                      if( isscalar(name_in2(j)) .and. isscalar(name_in1(i))  ) then
                           tmp=-tmp
-                          call isgoodf(tmp,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+                          call isgoodf(tmp,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
                      else
                       !if( (.not. isscalar(name_in1(i)))  .and. isscalar(name_in2(j)) ) then
                       !    tmp=-tmp
-                      !    call isgoodf(tmp,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+                      !    call isgoodf(tmp,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
                       !else if( isscalar(name_in1(i)) .and. (.not. isscalar(name_in2(j))) )then
                       !    tmp=-tmp
-                      !    call isgoodf(tmp,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+                      !    call isgoodf(tmp,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
                       if (  (.not. isscalar(name_in1(i)))  .and. (.not. isscalar(name_in2(j)))  ) then
                           tmp_vf=-tmp_vf
-                          call isgoodvf(tmp_vf,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+                          call isgoodvf(tmp_vf,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
                       end if
                    end if
                   end if
@@ -1057,7 +1063,7 @@ do i=1,nfin1
                        else
                          tmp=abs(fin1(:,i)-fin2(:,j))
                        end if
-                       call isgoodf(tmp,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+                       call isgoodf(tmp,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
                   else
                      ! if( (.not. isscalar(name_in1(i)))  .and. isscalar(name_in2(j)) ) then
                      !    if(index(op,'(-)')/=0) then
@@ -1065,21 +1071,21 @@ do i=1,nfin1
                      !    else
                      !     tmp=abs(sum(vfeat(:,:,nint(fin1(1,i))),2)-fin2(:,j))
                      !   end if
-                     !     call isgoodf(tmp,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+                     !     call isgoodf(tmp,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
                      ! else if( isscalar(name_in1(i)) .and. (.not. isscalar(name_in2(j))) )then
                      !    if(index(op,'(-)')/=0) then
                      !      tmp=abs(tmp)   ! if (-) exists, save time
                      !    else
                      !     tmp=abs(fin1(:,i)-sum(vfeat(:,:,nint(fin2(1,j))),2))
                      !    end if
-                     !     call isgoodf(tmp,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+                     !     call isgoodf(tmp,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
                        if (  (.not. isscalar(name_in1(i)))  .and. (.not. isscalar(name_in2(j)))  ) then
                          if(index(op,'(-)')/=0) then
                            tmp_vf=abs(tmp_vf)   ! if (-) exists, save time
                          else
                            tmp_vf=abs(vfeat(:,:,nint(fin1(1,i)))-vfeat(:,:,nint(fin2(1,j))))
                          end if
-                          call isgoodvf(tmp_vf,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+                          call isgoodvf(tmp_vf,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
                        end if
                   end if
                  END IF
@@ -1105,7 +1111,7 @@ do i=1,nfin1
                 dimtmp=dimcomb(dim_in1(:,i),dim_in2(:,j),'(*)')
                if( isscalar(name_in1(i)) .and. isscalar(name_in2(j)) ) then 
                     tmp=fin1(:,i)*fin2(:,j)
-                    call isgoodf(tmp,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+                    call isgoodf(tmp,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
                else 
                   !  if( (.not. isscalar(name_in1(i)))  .and. isscalar(name_in2(j))  ) then
                   !     do k=1,vfsize
@@ -1118,7 +1124,7 @@ do i=1,nfin1
                     if (  (.not. isscalar(name_in1(i)))  .and. (.not. isscalar(name_in2(j))) ) then
                        tmp_vf=vfeat(:,:,nint(fin1(1,i)))*vfeat(:,:,nint(fin2(1,j)))
                     end if
-                    call isgoodvf(tmp_vf,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+                    call isgoodvf(tmp_vf,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
                end if
             END IF
 
@@ -1170,7 +1176,7 @@ do i=1,nfin1
                if( isscalar(name_in1(i)) .and. isscalar(name_in2(j))  ) then
                     if(minval(abs(fin2(:,j)))>1d-50 ) then 
                     tmp=fin1(:,i)/fin2(:,j)
-                    call isgoodf(tmp,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+                    call isgoodf(tmp,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
                     end if
                else 
                  !   if( (.not. isscalar(name_in1(i)))  .and. isscalar(name_in2(j)) ) then
@@ -1190,7 +1196,7 @@ do i=1,nfin1
                        tmp_vf=vfeat(:,:,nint(fin1(1,i)))/vfeat(:,:,nint(fin2(1,j)))
                        end if
                   end if
-                  call isgoodvf(tmp_vf,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+                  call isgoodvf(tmp_vf,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
               end if
               !------
 
@@ -1205,7 +1211,7 @@ do i=1,nfin1
                 if( isscalar(name_in1(i)) .and.  isscalar(name_in2(j)) ) then
                      if(minval(abs(fin1(:,i)))>1d-50) then
                      tmp=fin2(:,j)/fin1(:,i)
-                     call isgoodf(tmp,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+                     call isgoodf(tmp,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
                      end if
                 else
                   !   if( (.not. isscalar(name_in1(i)))  .and.  isscalar(name_in2(j)) ) then
@@ -1225,7 +1231,7 @@ do i=1,nfin1
                           tmp_vf=vfeat(:,:,nint(fin2(1,j)))/vfeat(:,:,nint(fin1(1,i)))
                         end if
                      end if
-                     call isgoodvf(tmp_vf,name_tmp,lastop_tmp,comp_tmp,dimtmp,nf)
+                     call isgoodvf(tmp_vf,name_tmp,lastop_tmp,compl_tmp,dimtmp,nf)
                end if
            END if
 
@@ -1235,7 +1241,7 @@ do i=1,nfin1
 
   if(float(counter)/float(total_comb)>=progress) then
   write(*,'(a,i4,2(a,i15),a,f6.1,a)') &
-  'mpirank= ',mpirank,'  #generated =',nf,'  #selected =',nselect,'  progress =',progress*100,'%'
+  'mpirank = ',mpirank,'  #generated =',nf,'  #selected =',nselect,'  progress =',progress*100,'%'
   progress=progress+0.2
   end if
 
@@ -1244,9 +1250,9 @@ end do
 end subroutine
 
 
-function goodf(feat,name_feat,dimens,comp)
-integer*8 i,j,k,nf,l,ll,mm1,mm2,comp
-real*8 feat(:),dimens(:),scoretmp(2),maxabs,fnorm
+function goodf(feat,name_feat,dimens,compl)
+integer*8 i,j,k,nf,l,ll,mm1,mm2,compl
+real*8 feat(:),dimens(:),scoretmp(2),maxabs,react_feat(npoints)
 character(len=*) name_feat
 logical goodf,lsame
 
@@ -1259,12 +1265,12 @@ goodf=.true.
    mm1=1
    mm2=sum(nsample(:ntask))
   if(maxval(abs(feat(mm1:mm2)-feat(mm1)))<=1d-8) then
-    goodf=.false. ! no further operation on this feature
+    goodf=.false. ! constant feature.
     return
   end if
   maxabs=maxval(abs(feat(mm1:mm2)))
   if(maxabs>1d50 .or. maxabs<=1d-50) then
-    goodf=.false. ! no further operation on this feature
+    goodf=.false. ! intinity or zero
     return
   end if
 !end do
@@ -1272,17 +1278,20 @@ goodf=.true.
 ! not to be selected but can be used for further transformation
 if(maxabs>maxfval_ub .or. maxabs<maxfval_lb) return
 
-!sure independence screening
-if(ptype==1) scoretmp=sis_score(feat,trainy_c)
-if(ptype==2)   scoretmp=sis_score(feat,trainy) !classification
-
-if(sis_on) then
- if(scoretmp(1)<score_select(subs_sis(iFCDI),1)) return   
+if(nreaction==0) then
+  ! calculate the score for each feature
+  if(ptype==1) scoretmp=sis_score(feat,trainy_c)
+  if(ptype==2) scoretmp=sis_score(feat,trainy) !classification
+else if(nreaction>0) then
+  ! create reaction-feature
+  do i=1,nreaction
+     react_feat(i)=sum(react_coeff(i,:)*feat([react_speciesID(i,:)]))
+  end do
+  scoretmp=sis_score(react_feat,trainy_c)
 end if
 
-! should all element be involved ?
-if(npf_must>0) then
-if( .not. isABC(trim(name_feat)) ) return
+if(threshold_select) then
+   if (scoretmp(1)<score_select(nfinal_select,1)) return
 end if
 
 !----
@@ -1313,59 +1322,20 @@ end if
 ! selected
 !--------------------------
 nselect=nselect+1
-f_select(:,nselect)=feat
-fnorm=sqrt(sum(feat**2))
+if(nreaction==0) then
+  f_select(:,nselect)=feat
+elseif(nreaction>0) then
+  f_select(:,nselect)=react_feat
+endif
+complexity_select(nselect)=compl
 name_select(nselect)=name_feat
 score_select(nselect,:)=scoretmp
-ftag_select(nselect)=abs(sum(tag*feat))/fnorm/ntask   ! positive for ftag_select; positive & negative for ftag
-if(nselect== 2*subs_sis(iFCDI) ) then
-call sis_s
-sis_on=.true.
+if( nselect== nbasic_select+nextra_select )then
+  call update_select
+  threshold_select=.true.
 end if
 
 end function
-
-!subroutine addm_select(n,f_select,name_select,score_select,ftag_select)
-!! increase array size
-!real*8,allocatable:: real2d(:,:),real1d(:),f_select(:,:),score_select(:,:),ftag_select(:)
-!character(len=lname),allocatable:: char1d(:),name_select(:)(len=*),
-!integer*8 i,j,n
-!i=ubound(f_select,1)
-!j=ubound(f_select,2)
-!
-!! f_select
-!allocate(real2d(i,j))
-!real2d=f_select
-!deallocate(f_select)
-!allocate(f_select(i,j+n))
-!f_select(:,:j)=real2d
-!deallocate(real2d)
-!!-----
-!! name_select
-!allocate(char1d(j))
-!char1d=name_select
-!deallocate(name_select)
-!allocate(name_select(j+n))
-!name_select(:j)=char1d
-!deallocate(char1d)
-!!---
-!! ftag_select
-!allocate(real1d(j))
-!real1d=ftag_select
-!deallocate(ftag_select)
-!allocate(ftag_select(j+n))
-!ftag_select(:j)=real1d
-!deallocate(real1d)
-!!-----
-!! score_select
-!allocate(real2d(j,2))
-!real2d=score_select
-!deallocate(score_select)
-!allocate(score_select(j+n,2))
-!score_select(:j,:)=real2d
-!deallocate(real2d)
-!
-!end subroutine
 
 
 subroutine addm_out(n)
@@ -1472,59 +1442,6 @@ deallocate(real2d)
 !--
 end subroutine
 
-!subroutine addm_in2(n)
-!! increase array size
-!real*8,allocatable:: real2d(:,:)
-!integer*8,allocatable:: integer1d(:)
-!character(len=lname),allocatable:: char1d(:),char1d2(:)*10
-!integer*8 i,j,k,n
-!i=ubound(feat_in2,1)
-!j=ubound(feat_in2,2)
-!
-!! feat_in2
-!allocate(real2d(i,j))
-!real2d=feat_in2
-!deallocate(feat_in2)
-!allocate(feat_in2(i,j+n))
-!feat_in2(:,:j)=real2d
-!deallocate(real2d)
-!!-----
-!!name_in2
-!allocate(char1d(j))
-!char1d=name_in2
-!deallocate(name_in2)
-!allocate(name_in2(j+n))
-!name_in2(:j)=char1d
-!deallocate(char1d)
-!!----
-!!lastop_in2
-!allocate(char1d2(j))
-!char1d2=lastop_in2
-!deallocate(lastop_in2)
-!allocate(lastop_in2(j+n))
-!lastop_in2(:j)=char1d2
-!deallocate(char1d2)
-!
-!!---
-!!complexity_in2
-!allocate(integer1d(j))
-!integer1d=complexity_in2
-!deallocate(complexity_in2)
-!allocate(complexity_in2(j+n))
-!complexity_in2(:j)=integer1d
-!deallocate(integer1d)
-!
-!!dim_in2
-!i=ubound(dim_in2,1)
-!allocate(real2d(i,j))
-!real2d=dim_in2
-!deallocate(dim_in2)
-!allocate(dim_in2(i,j+n))
-!dim_in2(:,:j)=real2d
-!deallocate(real2d)
-!!--
-!end subroutine
-
 subroutine addm_vf(n)
 ! increase array size for vector feature
 real*8,allocatable:: real3d(:,:,:)
@@ -1595,15 +1512,23 @@ write(9,'(3a,i15)') 'Total number of features in the space ',trim(phiname),':',k
 end subroutine
 
 
-function better_name(name1,name2)
-integer better_name
+function simpler(complexity1,complexity2,name1,name2)
+integer*8 simpler,complexity1,complexity2
 character(len=*) name1,name2
- if(len_trim(name1)<len_trim(name2) .or. &
-   (len_trim(name1)==len_trim(name2) .and. trim(name1)<=trim(name2) ) ) then
-    better_name=1
- else
-    better_name=2
- end if
+
+if(complexity1<complexity2) then
+   simpler=1
+else if(complexity1>complexity2) then
+   simpler=2
+else if(complexity1==complexity2) then
+! the names make no sense, but to make sure a unique return when two features are exactly the same except names. 
+   if(len_trim(name1)<len_trim(name2) .or. &
+     (len_trim(name1)==len_trim(name2) .and. trim(name1)<=trim(name2) ) ) then
+      simpler=1
+   else
+      simpler=2
+   end if
+end if
 end function
 
 
@@ -1613,88 +1538,134 @@ if( any(available) ) then
    pavailable(mpirank+1)=.true.
 else
    pavailable(mpirank+1)=.false.
+   usedup_warning(mpirank+1)=usedup_warning(mpirank+1)+1
+   if(usedup_warning(mpirank+1)==1 .and. ffdecorr ) then
+     write(*,'(/a,i5,a)') 'Warning: the local subspace at mpirank ',mpirank,' is used up by SIS. &
+                    Please increase decorr_alpha and rerun SISSO'
+   end if
 end if
 end subroutine
 
 
-subroutine dup_pcheck(nfpcore_this,ftag,fname,order,available)
-real*8 ftag(:),time_start,time_end
-integer*8 i,j,k,l,ll,mpii,mpij,nfpcore_this(:),mpim(mpisize),mpiloc(mpisize),order(:),loc(1)
-character(len=lname) fname(:)
+subroutine dup_pcheck(nfpcore_this,fidentity,fname,complexity,order,available,ftype)
+real*8 fidentity(:,:),time_start,time_end
+integer*8 i,j,k,l,ll,mpii,mpij,nfpcore_this(:),mpim(mpisize),mpiloc(mpisize),order(:),loc(1),&
+          complexity(:),simpler_result
+character(len=*) ftype,fname(:)
 logical available(:)
-real*8,allocatable:: compftag(:)
+real*8,allocatable:: compidentity(:,:),compfeat(:,:)
 character(len=lname),allocatable:: compname(:)
+integer*8,allocatable:: compcomplexity(:)
 
 IF(mpisize>1) THEN
-   ! rank the features in descending order
-   mpim=nfpcore_this
-   do i=1,mpisize
+   mpim=nfpcore_this  ! number of features on each core
+   do i=1,mpisize 
       loc(1:1)=maxloc(mpim)
-      mpiloc(i)=loc(1)
+      mpiloc(i)=loc(1)  ! ordering the cores with the number of features from high to low
       mpim(loc(1))=-1
    end do
 
-!   if(mpirank==0)  write(*,'(a)') 'Redundant check between cores starts ... '
    do k=1,mpisize-1
 
      ! time recording
 !     if(mpirank==0) time_start=mpi_wtime()
      if(nfpcore_this(mpiloc(k))>0) then
-         ! allocate and assignment
-         allocate(compftag(nfpcore_this(mpiloc(k))))
+         ! allocate arrays
+         allocate(compidentity(nfpcore_this(mpiloc(k)),2))
          allocate(compname(nfpcore_this(mpiloc(k))))
+         allocate(compcomplexity(nfpcore_this(mpiloc(k))))
+         allocate(compfeat(npoints,nfpcore_this(mpiloc(k))))
 
          if(mpirank==mpiloc(k)-1) then
-           compftag=ftag(:nfpcore_this(mpiloc(k)))
+           compidentity=fidentity(:nfpcore_this(mpiloc(k)),:)
            compname=fname(:nfpcore_this(mpiloc(k)))
+           compcomplexity=complexity(:nfpcore_this(mpiloc(k)))
+           if(index(ftype,'selected')/=0) compfeat=f_select(:,:nfpcore_this(mpiloc(k)))
          end if
 
-         !broadcast compftag
-          call mpi_bcast(compftag,INT(nfpcore_this(mpiloc(k))),mpi_double_precision,INT(mpiloc(k))-1,mpi_comm_world,mpierr)
-         ! broadcast name
-          call mpi_bcast(compname,INT(nfpcore_this(mpiloc(k)))*lname,mpi_character,INT(mpiloc(k))-1,mpi_comm_world,mpierr)
+         !broadcast compidentity from core mpiloc(k)-1 to all other cores
+          call mpi_bcast(compidentity,2*nfpcore_this(mpiloc(k)),mpi_double_precision,mpiloc(k)-1,mpi_comm_world,mpierr)
+         ! broadcast the feature names
+          call mpi_bcast(compname,nfpcore_this(mpiloc(k))*lname,mpi_character,mpiloc(k)-1,mpi_comm_world,mpierr)
+         ! broadcast the feature complexities
+          call mpi_bcast(compcomplexity,nfpcore_this(mpiloc(k)),mpi_integer8,mpiloc(k)-1,mpi_comm_world,mpierr)
+         ! broadcast the selected features
+         if (index(ftype,'selected')/=0) call mpi_bcast(compfeat,npoints*nfpcore_this(mpiloc(k)),&
+                                                        mpi_double_precision,mpiloc(k)-1,mpi_comm_world,mpierr)
 
-         ! do the comparision
-         if( all( mpirank/=(mpiloc(:k)-1) ) .and. nfpcore_this(mpirank+1)>0 ) then
+         ! do the comparision. All cores of mpiloc(k:mpisize) will make comparison with
+         ! that on core mpiloc(k)-1
+         if( all( mpirank/=(mpiloc(:k)-1) ) .and. nfpcore_this(mpirank+1)>0 ) then 
             do mpij=1,nfpcore_this(mpiloc(k))
               l=0; ll=order(nfpcore_this(mpirank+1)+1);
-              i=l+ceiling(float(ll-l)/2.0)
+              i=l+ceiling(float(ll-l)/2.0)   ! bisection method
 
-               124 continue
-              if(abs(compftag(mpij)-ftag(order(i)))<=1d-8 ) then 
-              ! if equal
-                    if(better_name(compname(mpij),fname(order(i)))==1) then
-                       available(order(i))=.false.
-                    else
-                       compftag(mpij)=0.0
-                    end if
-                 cycle
-              else   ! if not equal
-                if(compftag(mpij)>ftag(order(i))) then
-                   ll=i
-                else
-                    l=i
-                end if
-                if(i==l+ceiling(float(ll-l)/2.0)) cycle
+              124 continue
+              simpler_result=simpler(compcomplexity(mpij),complexity(order(i)),compname(mpij),fname(order(i)))
+
+              ! the check for 'selected' is more strict than for 'all'.
+              if(index(ftype,'selected')/=0) then
+                 ! get rid of duplication and correlation for selected features
+                 if(equivalent(compidentity(mpij,:),fidentity(order(i),:),compfeat(:npoints,mpij),& ! mpij from mpiloc(k)-1
+                               f_select(:npoints,order(i))) ) then ! order(i) mpirank
+                       if(simpler_result==1) then
+                          available(order(i))=.false.
+                       else
+                          compidentity(mpij,1)=0.d0
+                       end if
+                    cycle
+                 end if
+                 ! if not equal
+                 if(compidentity(mpij,1)>fidentity(order(i),1) .or. (compidentity(mpij,1)==fidentity(order(i),1) &
+                    .and. compidentity(mpij,2)>fidentity(order(i),2)) .or. &
+                   (compidentity(mpij,1)==fidentity(order(i),1) .and. &
+                    compidentity(mpij,2)==fidentity(order(i),2) .and. simpler_result==1 ) ) then
+                    ll=i
+                 else
+                     l=i
+                 end if
+                 if(i==l+ceiling(float(ll-l)/2.0)) cycle
                  i=l+ceiling(float(ll-l)/2.0)
                  goto 124
+              else if(index(ftype,'all')/=0) then
+                 if(abs(compidentity(mpij,1)-fidentity(order(i),1))<=1d-8 ) then
+                 ! if equal
+                    if(simpler_result==1) then
+                       available(order(i))=.false.
+                    else
+                       compidentity(mpij,1)=0.d0
+                    end if
+                    cycle
+                 else   ! if not equal
+                   if(compidentity(mpij,1)>fidentity(order(i),1)) then
+                      ll=i
+                   else
+                       l=i
+                   end if
+                   if(i==l+ceiling(float(ll-l)/2.0)) cycle
+                    i=l+ceiling(float(ll-l)/2.0)
+                    goto 124
+                 end if
               end if
             end do
-        call mpi_send(compftag,INT(nfpcore_this(mpiloc(k))),mpi_double_precision,INT(mpiloc(k))-1,33,mpi_comm_world,mpierr)
-
+        call mpi_send(compidentity,2*nfpcore_this(mpiloc(k)),mpi_double_precision,mpiloc(k)-1,33,&
+                      mpi_comm_world,mpierr)
           else if(mpirank==mpiloc(k)-1) then
             do l=1,mpisize
              if( any( l==mpiloc(:k) ) .or. nfpcore_this(l)==0 ) cycle
-    call mpi_recv(compftag,INT(nfpcore_this(mpiloc(k))),mpi_double_precision,mpi_any_source,33,mpi_comm_world,status,mpierr)
+        call mpi_recv(compidentity,2*nfpcore_this(mpiloc(k)),mpi_double_precision,mpi_any_source,33,&
+                      mpi_comm_world,status,mpierr)
                do i=1,nfpcore_this(mpiloc(k))
-                if(abs(compftag(i))<1d-8) available(i)=.false.
+                if(abs(compidentity(i,1))<1d-8) available(i)=.false.
                end do
             end do
          end if
 
          ! deallocate
-         deallocate(compftag)
+         deallocate(compidentity)
          deallocate(compname)
+         deallocate(compcomplexity)
+         deallocate(compfeat)
      end if
 
      ! if(mpirank==0) then
@@ -1724,18 +1695,23 @@ END IF
 end subroutine
 
 
-subroutine iter_sis_p(nfpcore_this,available,ftag,fname,feat,sisfeat,name_sisfeat)
-! parallel sure independence screening
-
-real*8 ftag(:),tmp,sisfeat(:,:),pscore(mpisize,2),pftag(mpisize),feat(:,:)
-real*8,allocatable:: score(:,:)
-integer*8 i,j,k,l,ll,mpii,mpij,nfpcore_this(:),loc(2)
-character(len=*) fname(:),name_sisfeat(:)
-logical available(:),pavailable(mpisize)
+subroutine sure_indep_screening(nfpcore_this,available,complexity,fname,feat,sisfeat,name_sisfeat)
+! sure independence screening
+real*8 tmp,sisfeat(:,:),pscore(mpisize,2),feat(:,:),dd1,dd2
+real*8,allocatable:: score(:,:),score_sisfeat(:,:)
+integer*8,allocatable:: complexity_sisfeat(:)
+integer*8 i,j,k,l,ll,mpii,mpij,nfpcore_this(:),loc(2),simpler_result,complexity(:),pcomplexity(mpisize)
+character(len=lname) fname(:),name_sisfeat(:),pfname(mpisize)
+logical available(:),pavailable(mpisize),correlated
 
 allocate(score(nfpcore_this(mpirank+1),2))
+if(mpirank==0) then
+  allocate(score_sisfeat(subs_sis(iFCDI),2))
+  allocate(complexity_sisfeat(subs_sis(iFCDI)))
+end if
 
-if(mpirank==0) write(*,'(/a)') 'Final sure independence screening ...'
+usedup_warning=0
+if(mpirank==0) write(*,'(/a)') 'Sure Independence Screening ...'
 
 pavailable=.false.
 if(nfpcore_this(mpirank+1)>0) call update_availability(available,pavailable)
@@ -1744,105 +1720,149 @@ do l=1,mpisize
 end do
 if(nfpcore_this(mpirank+1)>0) score=-1   ! initial score
 
-i=0
-do while(i<subs_sis(iFCDI) .and. any(pavailable))
+! get the scores
+if(ptype==1) then
+   do k=1,nfpcore_this(mpirank+1)
+     if(available(k)) score(k,:)=sis_score(feat(:,k),trainy_c)
+   end do
+else if(ptype==2) then
+   do k=1,nfpcore_this(mpirank+1)
+     if(available(k)) score(k,:)=sis_score(feat(:,k),trainy) ! for classification
+   end do
+end if
 
-     ! get the scores
-     if(ptype==1) then
-        do k=1,nfpcore_this(mpirank+1)
-          if(available(k)) score(k,:)=sis_score(feat(:,k),trainy_c)
-        end do
-     else if(ptype==2) then
-        do k=1,nfpcore_this(mpirank+1)
-          if(available(k)) score(k,:)=sis_score(feat(:,k),trainy) ! for classification
-        end do
-     end if
+! selection starts ...
+i=0   ! count of selected features
+do while( any(pavailable) .and. i<subs_sis(iFCDI) )
 
-    ! selection starts ...
-    k=0
-    do while( k<subs_sis(iFCDI) .and. any(pavailable) .and. i<subs_sis(iFCDI))
-         k=k+1
-         i=i+1
+      i=i+1
 
-          ! find the max score 
-          if(nfpcore_this(mpirank+1)>0) then
-            loc(2:2)=maxloc(score(:,1))
-            tmp=score(loc(2),1)
-          end if
-          do l=1,nfpcore_this(mpirank+1)
-            if(  abs(tmp-score(l,1))<1d-8 ) then
-               if( score(l,2)>score(loc(2),2) .or. &
-                    (abs(score(l,2)-score(loc(2),2))<1d-8 .and.  ftag(l)>ftag(loc(2))) ) loc(2)=l
+      ! find the max score on each core
+      if(nfpcore_this(mpirank+1)>0) then
+        loc(2:2)=maxloc(score(:,1))
+        tmp=score(loc(2),1)
+      end if
+      do l=1,nfpcore_this(mpirank+1)  ! equal scores
+        if(  abs(tmp-score(l,1))<=1d-8 ) then
+           if( score(l,2)-score(loc(2),2)>1d-8 .or. (abs(score(l,2)-score(loc(2),2))<=1d-8 .and. &
+               simpler(complexity(l),complexity(loc(2)),fname(l),fname(loc(2)))==1 ) )  loc(2)=l
+        end if
+      end do
+      if(nfpcore_this(mpirank+1)>0) then
+        pscore(mpirank+1,:)=score(loc(2),:)
+        pcomplexity(mpirank+1)=complexity(loc(2))
+        pfname(mpirank+1)=fname(loc(2))
+      else
+        pscore(mpirank+1,:)=-1   ! simply a negative value to indicate empty
+      end if
+
+      !broadcast to send the information to all other cores
+      do l=1,mpisize
+        call mpi_bcast(pscore(l,:2),2,mpi_double_precision,l-1,mpi_comm_world,mpierr)
+        call mpi_bcast(pcomplexity(l),1,mpi_integer8,l-1,mpi_comm_world,mpierr)
+        call mpi_bcast(pfname(l),lname,mpi_character,l-1,mpi_comm_world,mpierr)
+      end do
+
+      !find the max score between cores
+      loc(1:1)=maxloc(pscore(:,1))
+      tmp=maxval(pscore(:,1))
+      do l=1,mpisize
+        if(  abs(tmp-pscore(l,1))<=1d-8 ) then
+           if( pscore(l,2)-pscore(loc(1),2)>1d-8 .or.  ( abs(pscore(l,2)-pscore(loc(1),2))<=1d-8 .and. &
+               simpler(pcomplexity(l),pcomplexity(loc(1)),pfname(l),pfname(loc(1)))==1 ) ) loc(1)=l
+        end if
+      end do
+
+      ! save the highest-scored feature
+      if((loc(1)-1)==mpirank) then
+         if(mpirank==0) then
+             sisfeat(:,i)=feat(:,loc(2))
+             name_sisfeat(i)=fname(loc(2))
+             score_sisfeat(i,:)=score(loc(2),:)
+             complexity_sisfeat(i)=complexity(loc(2))
+         else
+            call mpi_send(feat(:,loc(2)),npoints,mpi_double_precision,0,100,mpi_comm_world,mpierr)
+            call mpi_send(fname(loc(2)),lname,mpi_character,0,101,mpi_comm_world,mpierr)
+            call mpi_send(complexity(loc(2)),1,mpi_integer8,0,102,mpi_comm_world,mpierr)
+            call mpi_send(score(loc(2),:),2,mpi_double_precision,0,103,mpi_comm_world,mpierr)
+         end if
+         available(loc(2))=.false.   ! avoid to be selected again
+         score(loc(2),:)=-1  
+      end if
+
+      if(mpirank==0 .and. mpirank/=(loc(1)-1) ) then
+           call mpi_recv(sisfeat(:,i),npoints,mpi_double_precision,loc(1)-1,100,mpi_comm_world,status,mpierr)
+           call mpi_recv(name_sisfeat(i),lname,mpi_character,loc(1)-1,101,mpi_comm_world,status,mpierr)
+           call mpi_recv(complexity_sisfeat(i),1,mpi_integer8,loc(1)-1,102,mpi_comm_world,status,mpierr)
+           call mpi_recv(score_sisfeat(i,:),2,mpi_double_precision,loc(1)-1,103,mpi_comm_world,status,mpierr)
+      end if
+      !---
+
+      if(nfpcore_this(mpirank+1)>0) call update_availability(available,pavailable)
+      do l=1,mpisize
+       call mpi_bcast(pavailable(l),1,mpi_logical,l-1,mpi_comm_world,mpierr)
+      end do
+
+      if(ffdecorr) then
+         correlated=.false.
+         dd1=max(1d-8,decorr_delta)
+         dd2=min(decorr_theta,1.d0-1.d-8)
+         if(mpirank==0 .and. i>1) then
+            do j=i-1,1,-1
+            if(abs(score_sisfeat(j,1)-score_sisfeat(i,1))>dd1 .or. &
+              (abs(score_sisfeat(j,1)-score_sisfeat(i,1))<=dd1 .and. &
+               abs(score_sisfeat(j,2)-score_sisfeat(i,2))>dd1) )  exit ! if not similar scores
+
+            if(abs(ffcorr(sisfeat(:,j),sisfeat(:,i)))>= dd2  ) then  ! decorrelation
+                correlated=.true.
+               if(score_sisfeat(j,1)<score_sisfeat(i,1) .or. &
+                  (score_sisfeat(j,1)==score_sisfeat(i,1) .and. score_sisfeat(j,2)<score_sisfeat(i,2)) .or. &
+                  (score_sisfeat(j,1)==score_sisfeat(i,1) .and. score_sisfeat(j,2)==score_sisfeat(i,2) .and. &
+                  simpler(complexity_sisfeat(i),complexity_sisfeat(j),name_sisfeat(i),name_sisfeat(j))==1)) then
+                  sisfeat(:,j)=sisfeat(:,i)
+                  name_sisfeat(j)=name_sisfeat(i)
+                  complexity_sisfeat(j)=complexity_sisfeat(i)
+                  score_sisfeat(j,:)=score_sisfeat(i,:)
+               end if
+               exit
             end if
-          end do
-          if(nfpcore_this(mpirank+1)>0) then
-            pscore(mpirank+1,:)=score(loc(2),:)
-            pftag(mpirank+1)=ftag(loc(2))
-          else
-            pscore(mpirank+1,:)=-1   ! smaller than score of any available features
-          end if
+            end do
+         end if
+         call mpi_barrier(mpi_comm_world,mpierr)
+         call mpi_bcast(correlated,1,mpi_logical,0,mpi_comm_world,mpierr)
+         if(correlated) i=i-1
+      end if
 
-          !broadcast to let all the core has the same data
-          do l=1,mpisize
-            call mpi_bcast(pscore(l,:2),2,mpi_double_precision,INT(l)-1,mpi_comm_world,mpierr)
-            call mpi_bcast(pftag(l),1,mpi_double_precision,INT(l)-1,mpi_comm_world,mpierr)
-          end do
+end do
+!--------------------
 
-          !find the max score
-          loc(1:1)=maxloc(pscore(:,1))
-          tmp=maxval(pscore(:,1))
-          do l=1,mpisize
-            if(  abs(tmp-pscore(l,1))<1d-8 ) then
-               if( pscore(l,2)>pscore(loc(1),2) .or. &
-                    ( abs(pscore(l,2)-pscore(loc(1),2))<1d-8 .and.  pftag(l)>pftag(loc(1))) ) loc(1)=l
-            end if
-          end do
+do l=1,mpisize
+  call mpi_bcast(usedup_warning(l),1,mpi_integer8,l-1,mpi_comm_world,mpierr)
+end do
 
-          ! store the important features
-          if((loc(1)-1)==mpirank) then
-             available(loc(2))=.false.
-             score(loc(2),:)=-1
-             if(mpirank==0) then
-                 sisfeat(:,i)=feat(:,loc(2))
-                 name_sisfeat(i)=fname(loc(2))
-             else
-                call mpi_send(feat(:,loc(2)),sum(nsample),mpi_double_precision,0,100,mpi_comm_world,mpierr)
-                call mpi_send(fname(loc(2)),lname,mpi_character,0,101,mpi_comm_world,mpierr)
-             end if
-          end if
-
-          if(mpirank==0 .and. mpirank/=(loc(1)-1) ) then
-               call mpi_recv(sisfeat(:,i),sum(nsample),mpi_double_precision,INT(loc(1))-1,100,mpi_comm_world,status,mpierr)
-               call mpi_recv(name_sisfeat(i),lname,mpi_character,INT(loc(1))-1,101,mpi_comm_world,status,mpierr)
-          end if
-          !---
-
-          if(nfpcore_this(mpirank+1)>0) call update_availability(available,pavailable)
-          do l=1,mpisize
-           call mpi_bcast(pavailable(l),1,mpi_logical,INT(l)-1,mpi_comm_world,mpierr)
-          end do
-     end do
-     !--------------------
-
-end do  
 nsis(iFCDI)=i    ! the actual number of selected features
 deallocate(score)
+if(mpirank==0) then
+  deallocate(score_sisfeat)
+  deallocate(complexity_sisfeat)
+end if
+
 end subroutine
 
 
-subroutine dup_scheck(nf,ftag,fname,order,available)
+subroutine dup_scheck(nf,fidentity,fname,complexity,order,available,ftype)
 ! duplication check
 ! output order and available
-integer*8 i,j,l,ll,order(:),n,nf
-real*8 ftag(:)
-character(len=*) fname(:)
+integer*8 i,j,l,ll,order(:),n,nf,complexity(:),simpler_result
+real*8 fidentity(:,:)
+character(len=*) fname(:),ftype
 logical available(:)
 
 IF(nf==0) THEN
   n=0
 ELSE
 
-  ! ordering from large to small
+  ! ordering features fidentity from large to small
   order(1)=1
   n=1
   do i=2,nf
@@ -1851,16 +1871,25 @@ ELSE
     j=l+ceiling(float(ll-l)/2.0)
 
     123 continue
-    if(abs(ftag(i)-ftag(order(j)))<=1d-8 ) then  ! if equal
-         if(better_name(fname(i),fname(order(j)))==2) then
-            available(i)=.false.
-         else
-            available(order(j))=.false.
-            order(j)=i
-         end if
-         cycle
-    else   ! if not equal
-      if(ftag(i)>ftag(order(j))) then
+    simpler_result=simpler(complexity(i),complexity(order(j)),fname(i),fname(order(j)))
+
+    ! the check for 'selected' is more strict than for 'all'.
+    if(index(ftype,'selected')/=0) then
+       ! get rid of duplication and correlation for selected features
+       if(equivalent(fidentity(i,1:2),fidentity(order(j),1:2),f_select(:npoints,i),&
+                     f_select(:npoints,order(j))) ) then
+            if( simpler_result==1 ) then
+               available(order(j))=.false.
+               order(j)=i
+            else
+               available(i)=.false.
+            end if
+            cycle
+       end if
+      ! if not equal
+      if(fidentity(i,1)>fidentity(order(j),1) .or. (fidentity(i,1)==fidentity(order(j),1) .and. &
+         fidentity(i,2)>fidentity(order(j),2)) .or. (fidentity(i,1)==fidentity(order(j),1) .and. & 
+         fidentity(i,2)==fidentity(order(j),2) .and. simpler_result==1 ) ) then
          ll=j
          if(j==l+ceiling(float(ll-l)/2.0)) then
            order(j+1:n+1)=order(j:n)
@@ -1879,8 +1908,39 @@ ELSE
        end if
        j=l+ceiling(float(ll-l)/2.0)
        goto 123
-     end if
-   end do
+    else if(index(ftype,'all')/=0) then
+       if(abs(fidentity(i,1)-fidentity(order(j),1))<=1d-8 ) then  ! if equal
+            if( simpler_result==1 ) then
+               available(order(j))=.false.
+               order(j)=i
+            else
+               available(i)=.false.
+            end if
+            cycle
+        else  ! not equal  
+            if(fidentity(i,1)>fidentity(order(j),1)) then
+               ll=j
+               if(j==l+ceiling(float(ll-l)/2.0)) then
+                 order(j+1:n+1)=order(j:n)
+                 order(j)=i
+                 n=n+1
+                 cycle
+               end if
+             else
+                l=j
+                if(j==l+ceiling(float(ll-l)/2.0)) then
+                  if(n>j) order(j+2:n+1)=order(j+1:n)
+                  order(j+1)=i
+                  n=n+1
+                  cycle
+                end if
+             end if
+
+             j=l+ceiling(float(ll-l)/2.0)
+             goto 123
+        end if
+    end if
+ end do
 
 END IF
 
@@ -1897,8 +1957,8 @@ end subroutine
 
 
 function sis_score(feat,yyy)   
-! high scored features will be selected
-! sis_score is a 2-vector function, with the 1st the main metric and the other the 2nd metric
+! correlation between a feature feat and the property yyy
+! sis_score returns a vector with 2 elements
 integer i,j,mm1,mm2,mm3,mm4,k,kk,l,overlap_n,nf1,nf2,itask,nconvexpair
 real*8 feat(:),sdfeat(ubound(feat,1)),tmp(ntask),sis_score(2),yyy(:),xnorm(ntask),xmean(ntask),&
        overlap_length,length_tmp,feat_tmp1(ubound(feat,1)),feat_tmp2(ubound(feat,1)),mindist,minlen
@@ -1906,19 +1966,27 @@ logical isoverlap
 
 
 if(ptype==1) then  
-   do j=1,ntask
-       mm1=sum(nsample(:j-1))+1
-       mm2=sum(nsample(:j))
-       xmean(j)=sum(feat(mm1:mm2))/nsample(j)
-       sdfeat(mm1:mm2)=feat(mm1:mm2)-xmean(j)  
-       xnorm(j)=sqrt(sum((sdfeat(mm1:mm2))**2))
-       if(xnorm(j)>1d-50) sdfeat(mm1:mm2)=sdfeat(mm1:mm2)/xnorm(j)  ! standardization to the features
-       tmp(j)=abs(sum(sdfeat(mm1:mm2)*yyy(mm1:mm2)))   ! |xy| absolute inner product
-   end do
-  ! score ranges from 0 to 1
-  sis_score(1)=sqrt(sum(tmp**2)/ntask)  ! quadratic mean of the scores of different tasks
-  sis_score(1)=sis_score(1)/sqrt(sum(yyy**2)/ntask)  ! normalize the total score
-  sis_score(2)=1.d0   ! not used
+   if(nreaction==0) then
+     do j=1,ntask
+         mm1=sum(nsample(:j-1))+1
+         mm2=sum(nsample(:j))
+         xmean(j)=sum(feat(mm1:mm2))/nsample(j)
+         sdfeat(mm1:mm2)=feat(mm1:mm2)-xmean(j)  
+         xnorm(j)=sqrt(sum((sdfeat(mm1:mm2))**2))
+         if(xnorm(j)>1d-50) sdfeat(mm1:mm2)=sdfeat(mm1:mm2)/xnorm(j)  ! standardization to the features
+         tmp(j)=abs(sum(sdfeat(mm1:mm2)*yyy(mm1:mm2)))   ! |xy|
+     end do
+   elseif(nreaction>0) then
+     xmean(1)=sum(feat(:nreaction))/nreaction
+     sdfeat(:nreaction)=feat(:nreaction)-xmean(1)
+     xnorm(1)=sqrt(sum((sdfeat(:nreaction))**2))
+     if(xnorm(1)>1d-50) sdfeat(:nreaction)=sdfeat(:nreaction)/xnorm(1)
+     tmp(1)=abs(sum(sdfeat(:nreaction)*yyy))   ! |xy|
+   end if
+   ! score ranges from 0 to 1
+   sis_score(1)=sqrt(sum(tmp**2)/ntask)  ! quadratic mean of the scores of different tasks
+   sis_score(1)=sis_score(1)/sqrt(sum(yyy**2)/ntask)  ! normalization
+   sis_score(2)=1.d0   ! not used
 
 else if(ptype==2) then  
    mindist=-1d10
@@ -1999,28 +2067,28 @@ end if
 end function
 
 
-subroutine isgoodf(feat,name_feat,lastop,comp,dimens,nf)
+subroutine isgoodf(feat,name_feat,lastop,compl,dimens,nf)
 real*8 feat(:),dimens(:)
 character(len=*) name_feat,lastop
-integer*8 nf,comp
+integer*8 nf,compl
 
-if(goodf(feat,name_feat,dimens,comp)) then
+if(goodf(feat,name_feat,dimens,compl)) then
   nf=nf+1
   if(foutsave) then
   if(nf>ubound(fout,2)) call addm_out(int8(ceiling(100000.0/mpisize)))
   fout(:,nf)=feat
   name_out(nf)=name_feat
   lastop_out(nf)=lastop
-  complexity_out(nf)=comp
+  complexity_out(nf)=compl
   dim_out(:,nf)=dimens
   end if
 end if
 end subroutine
 
-subroutine isgoodvf(feat,name_feat,lastop,comp,dimens,nf)
+subroutine isgoodvf(feat,name_feat,lastop,compl,dimens,nf)
 real*8 feat(:,:),dimens(:),feat2(ubound(feat,1))
 character(len=*) name_feat,lastop
-integer*8 nf,d1,i,comp
+integer*8 nf,d1,i,compl
 
 d1=ubound(feat,1)
 
@@ -2037,18 +2105,18 @@ do i=1,d1
   end if
 end do
 
-if(goodf(feat2,name_feat,dimens,comp)) then
+if(goodf(feat2,name_feat,dimens,compl)) then
   nf=nf+1
   nvf_new=nvf_new+1
   if(foutsave) then
   if(nf>ubound(fout,2)) call addm_out(int8(ceiling(100000.0/mpisize)))
   if(nvf_new>ubound(vfeat,3)) call addm_vf(int8(ceiling(100000.0/mpisize)))
   fout(1,nf)=nvf_new
-  fout(2,nf)=abs(sum(tag*feat2))/ntask
+  fout(2,nf)=sqrt(sum((tag+feat2)**2))
   vfeat(:,:,nvf_new)=feat
   name_out(nf)=name_feat
   lastop_out(nf)=lastop
-  complexity_out(nf)=comp
+  complexity_out(nf)=compl
   dim_out(:,nf)=dimens
   end if
 end if
@@ -2067,179 +2135,105 @@ isscalar=.true.
 end if
 end function
 
-
-function isABC(fname)
-logical isABC
-character(len=*) fname
-isABC=.false.  
-
-if(npf_must==6) then
-   if ( index(fname,'A')/=0 .and. index(fname,'B')/=0 .and. index(fname,'C')/=0 .and. &
-   index(fname,'D')/=0 .and. index(fname,'E')/=0 .and. index(fname,'F')/=0 ) isABC=.true.
-else if(npf_must==5) then
-   if ( index(fname,'A')/=0 .and. index(fname,'B')/=0 .and. index(fname,'C')/=0 .and. &
-   index(fname,'D')/=0 .and. index(fname,'E')/=0 ) isABC=.true.
-else if(npf_must==4) then
-   if ( index(fname,'A')/=0 .and. index(fname,'B')/=0 .and. index(fname,'C')/=0 .and. &
-   index(fname,'D')/=0 ) isABC=.true.
-else if(npf_must==3) then
-   if ( index(fname,'A')/=0 .and. index(fname,'B')/=0 .and. index(fname,'C')/=0 ) isABC=.true.
-else if(npf_must==2) then
-   if ( index(fname,'A')/=0 .and. index(fname,'B')/=0 ) isABC=.true.
-else if(npf_must==1) then
-   if ( index(fname,'A')/=0) isABC=.true.
-end if
-end function
-
-
-subroutine sis_s
-! delete redundant feature, reduce size to subs_sis
-integer*8 i,j,k,l,ll,order(nselect),n
-real*8 tmpf(ubound(f_select,1),subs_sis(iFCDI)),tmpftag(subs_sis(iFCDI)),tmpscore(subs_sis(iFCDI),2)
-character(len=lname) tmpname(subs_sis(iFCDI))
+subroutine update_select
+! update the selected space
+! bisection method for descending order
+integer*8 i,j,k,l,ll,order(nselect),n,tmp,tmpcomplexity(nbasic_select),simpler_result
+real*8 tmpf(ubound(f_select,1),nbasic_select),tmpscore(nbasic_select,2)
+character(len=lname) tmpname(nbasic_select)
 
 ! ordering from large to small
-order(1)=1
-n=1
-do i=2,nselect
+order(1)=1   ! assuming the first feature being the best (highest score)
+n=1  ! count of features saved in 'order'
+
+do i=2,nselect   ! compare feaure i with the j located at middle of order(1:n)
 
   l=0; ll=n;
-  j=l+ceiling(float(ll-l)/2.0)
+  j=l+ceiling(float(ll-l)/2.0)   ! j is at middle between l and ll.
  
   125 continue
-  if(abs(score_select(i,1)-score_select(order(j),1))<=1d-8 .and. &
-                          abs(ftag_select(i)-ftag_select(order(j)))<=1d-8  ) then  ! if equal
-         if(better_name(name_select(i),name_select(order(j)))==1) order(j)=i
-         cycle
-  else   ! if not equal, select those with large score
-   if( (score_select(i,1)-score_select(order(j),1))>1d-8 .or. &
-   (abs(score_select(i,1)-score_select(order(j),1))<=1d-8 .and. score_select(i,2)-score_select(order(j),2)>1d-8 ) .or. &
-   (abs(score_select(i,1)-score_select(order(j),1))<=1d-8 .and. abs(score_select(i,2)-score_select(order(j),2))<=1d-8  &
-                                                             .and.(ftag_select(i)-ftag_select(order(j)))>1d-8) ) then
-         ll=j
-         if(j==l+ceiling(float(ll-l)/2.0)) then
-           order(j+1:n+1)=order(j:n)
-           order(j)=i
-           n=n+1
-           cycle
-         end if
-    else
-          l=j
-          if(j==l+ceiling(float(ll-l)/2.0)) then
-            if(n>j) order(j+2:n+1)=order(j+1:n)
-            order(j+1)=i
-            n=n+1
-            cycle
-          end if
-    end if
-       j=l+ceiling(float(ll-l)/2.0)
-       goto 125
+  simpler_result=simpler(complexity_select(i),complexity_select(order(j)),name_select(i),name_select(order(j)))
+
+  ! get rid of duplicate features
+  if(equivalent(score_select(i,1:2),score_select(order(j),1:2),f_select(:npoints,i),&
+                f_select(:npoints,order(j))) ) then
+        if( simpler_result==1) order(j)=i  ! retain the simpler feature, and remove the other
+        cycle
   end if
+
+  ! bisection method for descending order
+  if( (score_select(i,1)>score_select(order(j),1)) .or.  ((score_select(i,1)==score_select(order(j),1)) &
+       .and. score_select(i,2)>score_select(order(j),2) ) .or.  ((score_select(i,1)==score_select(order(j),1)) &
+       .and. score_select(i,2)==score_select(order(j),2) .and. simpler_result==1) )then
+      ll=j   ! i is better, let the middle at j to be the new right end
+      if(j==l+ceiling(float(ll-l)/2.0)) then  ! if the middle equal the last, insert i to position j
+        order(j+1:n+1)=order(j:n)   ! shift the original j:n features backward by 1 step
+        order(j)=i ! ordering over for this cycle
+        n=n+1  ! size of 'order' increased by 1
+        cycle
+      end if
+   else   ! j is better, let the middle at j to be the new left end
+       l=j
+       if(j==l+ceiling(float(ll-l)/2.0)) then
+         if(n>j) order(j+2:n+1)=order(j+1:n)
+         order(j+1)=i
+         n=n+1
+         cycle
+       end if
+   end if
+
+   j=l+ceiling(float(ll-l)/2.0)  ! the new middle
+   goto 125
 end do
 
-n=min(n,subs_sis(iFCDI))
-do i=1,n
+nfinal_select=min(n,nbasic_select)
+
+! reordering
+do i=1,nfinal_select
 tmpf(:,i)=f_select(:,order(i))
+tmpcomplexity(i)=complexity_select(order(i))
 tmpname(i)=name_select(order(i))
-tmpftag(i)=ftag_select(order(i))
 tmpscore(i,:)=score_select(order(i),:)
 end do
 
-nselect=n
-f_select(:,:n)=tmpf(:,:n)
-name_select(:subs_sis(iFCDI))=tmpname(:n)
-ftag_select(:n)=tmpftag(:n)
-score_select(:n,:)=tmpscore(:n,:)
+nselect=nfinal_select
+f_select(:,:nselect)=tmpf(:,:nselect)
+complexity_select(:nselect)=tmpcomplexity(:nselect)
+name_select(:nselect)=tmpname(:nselect)
+score_select(:nselect,:)=tmpscore(:nselect,:)
 end subroutine
 
-!subroutine allocation(core_task,mpin,nfpcore)
-!integer*8 core_task(:,:),mpii,mpij,mpik,i,j,k,nfpcore(mpisize),mpin(mpisize)
-!! arrange tasks according to mpin from nfpcore
-!! core_task(a,b,c,d): a,send_id; b, receive_id; c, feature_start; d: feature_end.
-!  core_task=-1   ! initialization
-!  k=0      ! entry_id for the core_task
-!  mpii=0   ! number_of_feature already sent from nfpcore(i+1)
-!  mpij=0   ! number_of_feature already received by mpin(j+1)
-!  mpik=0
-!  do j=0,mpisize-1  ! receive_core_id
-!
-!    if(mpin(j+1)==0) cycle
-!
-!    do i=mpik,mpisize-1   ! send_core_id
-!
-!       if(nfpcore(i+1)-mpii==0) then
-!         mpik=mpik+1
-!         mpii=0
-!         cycle
-!       end if
-!
-!       if(nfpcore(i+1)-mpii>=mpin(j+1)-mpij) then
-!         k=k+1
-!         core_task(k,:)=(/i,j,mpii+1,mpii+mpin(j+1)-mpij/)
-!         mpii=mpii+mpin(j+1)-mpij
-!         mpij=0  ! new mpin element
-!         exit
-!       else
-!         k=k+1
-!         core_task(k,:)=(/i,j,mpii+1,nfpcore(i+1)/)
-!         mpij=mpij+nfpcore(i+1)-mpii
-!         mpii=0
-!         mpik=mpik+1
-!       end if
-!    end do
-!  end do
-!
-!end subroutine
-!
-!subroutine mpi_five(fout,name_out,lastop_out,complexity_out,dim_out,&
-!                  feat_in,name_in,lastop_in,complexity_in,dim_in,core_task)
-!integer*8 i,j,k,l,n,complexity_out(:),complexity_in(:),core_task(:,:)
-!real*8 fout(:,:),dim_out(:,:),feat_in(:,:),dim_in(:,:)
-!character(len=*) name_in(:),lastop_in(:)
-!
-! n=ubound(core_task,1)
-! l=0
-! do i=1,n
-!     if(mpirank==core_task(i,1) .and. core_task(i,1)/=core_task(i,2)) then   ! send 
-!        j=core_task(i,3)
-!        k=core_task(i,4)
-!        call mpi_send(fout(:,j:k),(k-j+1)*sum(nsample),mpi_double_precision,core_task(i,2),31,&
-!                     mpi_comm_world,status,mpierr)
-!        call mpi_send(name_out(j:k),(k-j+1)*lname,mpi_character,core_task(i,2),32,&
-!                     mpi_comm_world,status,mpierr)
-!        call mpi_send(lastop_out(j:k),(k-j+1)*10,mpi_character,core_task(i,2),33,&
-!                     mpi_comm_world,status,mpierr)
-!        call mpi_send(complexity_out(j:k),(k-j+1),mpi_integer8,core_task(i,2),34,&
-!                     mpi_comm_world,status,mpierr)
-!        call mpi_send(dim_out(:,j:k),(k-j+1)*ndimtype,mpi_double_precision,core_task(i,2),35,&
-!                     mpi_comm_world,status,mpierr)
-!     end if
-!     if(core_task(i,2)==mpirank .and. core_task(i,1)/=core_task(i,2)) then  ! receive
-!        j=core_task(i,3)
-!        k=core_task(i,4)
-!        call mpi_recv(feat_in(:,l+1:l+k-j+1),(k-j+1)*sum(nsample),mpi_double_precision,core_task(i,1),31,&
-!                     mpi_comm_world,status,mpierr)
-!        call mpi_recv(name_in(l+1:l+k-j+1),(k-j+1)*lname,mpi_character,core_task(i,1),32,&
-!                    mpi_comm_world,status,mpierr)
-!        call mpi_recv(lastop_in(l+1:l+k-j+1),(k-j+1)*10,mpi_character,core_task(i,1),33,&
-!                     mpi_comm_world,status,mpierr)
-!        call mpi_recv(complexity_in(l+1:l+k-j+1),(k-j+1),mpi_integer8,core_task(i,1),34,&
-!                     mpi_comm_world,status,mpierr)
-!        call mpi_recv(dim_in(:,l+1:l+k-j+1),(k-j+1)*ndimtype,mpi_double_precision,&
-!                     core_task(i,1),35,mpi_comm_world,status,mpierr)
-!        l=l+k-j+1
-!     end if
-!     if(mpirank==core_task(i,1) .and. core_task(i,2)==core_task(i,1)) then  ! receive
-!        j=core_task(i,3)
-!        k=core_task(i,4)
-!        feat_in1(:,l+1:l+k-j+1)=fout(:,j:k)
-!        name_in1(l+1:l+k-j+1)=name_out(j:k)
-!        lastop_in1(l+1:l+k-j+1)=lastop_out(j:k)
-!        complexity_in1(l+1:l+k-j+1)=complexity_out(j:k)
-!        dim_in1(:,l+1:l+k-j+1)=dim_out(:,j:k)
-!        l=l+k-j+1
-!      end if
-!  end do
-!end subroutine
+
+function ffcorr(feat1,feat2)
+! calculate the correlation coefficient between two features
+real*8 ffcorr,feat1(:),feat2(:),mean1,mean2,sd1,sd2
+integer ns
+
+ns=sum(nsample)
+mean1=sum(feat1)/float(ns)
+mean2=sum(feat2)/float(ns)
+sd1=sqrt((sum((feat1-mean1)**2))/float(ns))
+sd2=sqrt((sum((feat2-mean2)**2))/float(ns))
+ffcorr=(sum((feat1-mean1)*(feat2-mean2)))/float(ns)/sd1/sd2
+if(ffcorr>1.d0) ffcorr=1.d0
+if(ffcorr<-1.d0) ffcorr=-1.d0
+end function
+
+
+function equivalent(score1,score2,feat1,feat2)
+! calculate if two features are the same or highly correlated.
+real*8 score1(:),score2(:),diff1,diff2,diff3,feat1(:),feat2(:)
+logical equivalent
+
+equivalent=.false.
+
+diff1=score1(1)-score2(1)
+diff2=score1(2)-score2(2)
+diff3=1.d0-1d-8
+if( abs(diff1)<=1d-8 .and. abs(diff2)<=1d-8 .and. abs(ffcorr(feat1,feat2))>=diff3 ) equivalent=.true.
+
+end function
+
 
 end module
+

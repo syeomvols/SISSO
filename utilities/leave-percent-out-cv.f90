@@ -1,5 +1,5 @@
 program lpocv
-! creating train.dat for leave-percent-out cross validation 
+! creating the train.dat for the subsets of samples for leave-percent-out cross validation 
 ! applicable to both classification and regression
 
 integer i,j,k,l,iii,niter,ptype,ngroup
@@ -7,7 +7,6 @@ integer,allocatable:: nsample(:),msample(:)
 character jobname*7,line*100000,nsample_line*100000
 real rand,percent
 logical,allocatable:: selected(:,:)
-
 
 ! USER input
 parameter(niter=50,percent=0.1)
